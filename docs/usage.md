@@ -218,4 +218,4 @@ Resources/                  应用图标和 Info.plist
 scripts/                    打包及图标生成
 ```
 
-toml++ 采用 MIT 许可证，见 `Sources/CTOMLPatch/LICENSE`。应用包同时包含该许可证。
+本项目采用 [MIT 许可证](../LICENSE)，允许使用、修改、分发和商业使用，分发时需保留版权与许可声明。toml++ 同样采用 MIT 许可证，见 [第三方许可证](../Sources/CTOMLPatch/LICENSE)。应用包同时包含两份许可证。

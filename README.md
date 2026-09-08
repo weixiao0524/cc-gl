@@ -7,6 +7,7 @@
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)
 ![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white)
 ![UI SwiftUI](https://img.shields.io/badge/UI-SwiftUI-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ![Codex 配置主界面，使用隔离演示数据](Resources/preview.png)
 
@@ -132,6 +133,8 @@ docs/                  详细说明与第三方接口描述
 
 提交代码前请运行 `swift test`；涉及配置写入的改动应保留精确修改、备份和冲突检测行为。
 
-## 第三方许可
+## 开源许可证
 
-内置的 [toml++](https://github.com/marzer/tomlplusplus) 使用 MIT 许可证，见 [第三方许可证](Sources/CTOMLPatch/LICENSE)。该许可证仅适用于对应第三方代码；本项目其余代码尚未指定开源许可证。
+本项目采用 [MIT 许可证](LICENSE)，允许自由使用、复制、修改、分发和商业使用，也允许闭源衍生项目；分发时需保留版权声明与许可声明。软件按原样提供，不附带任何担保。
+
+内置的 [toml++](https://github.com/marzer/tomlplusplus) 使用 MIT 许可证，见 [第三方许可证](Sources/CTOMLPatch/LICENSE)。第三方代码保留其原作者版权声明。

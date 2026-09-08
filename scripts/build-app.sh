@@ -15,6 +15,7 @@ if [[ ! -f Resources/AppIcon.icns ]]; then
     iconutil -c icns .build/AppIcon.iconset -o Resources/AppIcon.icns
 fi
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
+cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 cp Sources/CTOMLPatch/LICENSE "$app/Contents/Resources/tomlplusplus-LICENSE.txt"
 codesign --force --sign "${SIGN_IDENTITY:--}" --options runtime "$app"
 codesign --verify --strict "$app"
