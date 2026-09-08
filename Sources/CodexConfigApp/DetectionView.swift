@@ -15,8 +15,12 @@ struct DetectionView: View {
             header
             ScrollView {
                 VStack(spacing: 17) {
-                    DetectiveAnimation(scene: model.scene, motionDisabled: model.isDemo && CommandLine.arguments.contains("--demo-reduce-motion"))
-                    story
+                    if model.hasCompletedReport {
+                        resultSummary
+                    } else {
+                        configuration
+                        story
+                    }
                     if let stage = model.scene.stage { steps(stage) }
                     if model.phase == .running {
                         VStack(alignment: .leading, spacing: 6) {
@@ -30,7 +34,15 @@ struct DetectionView: View {
                             }
                         }
                     }
-                    configuration
+                    Text(model.message)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    DetectiveAnimation(scene: model.scene,
+                                       motionDisabled: model.isDemo && CommandLine.arguments.contains("--demo-reduce-motion"),
+                                       height: model.hasCompletedReport ? 120 : 160)
+                    if model.hasCompletedReport { configuration }
                     DisclosureGroup(isExpanded: $detailsExpanded) {
                         technicalDetails.padding(.top, 10)
                     } label: {
@@ -38,7 +50,7 @@ struct DetectionView: View {
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(13)
-                    .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+                    .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
                 }
                 .padding(.horizontal, 24).padding(.bottom, 20)
             }
@@ -69,8 +81,6 @@ struct DetectionView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text("模型侦探社").font(.system(size: 21, weight: .bold, design: .rounded))
-                Text("让复杂检查，变成一次小小的查案。")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
             Label(model.isDemo ? "模拟演练" : "轻量检查", systemImage: model.isDemo ? "theatermasks" : "leaf")
@@ -85,7 +95,7 @@ struct DetectionView: View {
     private var story: some View {
         VStack(spacing: 8) {
             Text(model.scene.title)
-                .font(.system(size: 23, weight: .bold, design: .rounded))
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .foregroundStyle(accent)
                 .accessibilityIdentifier("detective-story-title")
             Text(model.scene.explanation)
@@ -99,6 +109,42 @@ struct DetectionView: View {
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var resultSummary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("检测结果").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+            LabeledContent("检测对象", value: model.reportCandidate.rawValue)
+                .font(.system(size: 13, design: .monospaced))
+            Text(model.baseURL).font(.system(size: 12)).foregroundStyle(.secondary)
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Label(model.scene.title, systemImage: model.scene.symbol)
+                .font(.system(size: 18, weight: .semibold)).foregroundStyle(accent)
+                .accessibilityIdentifier("detective-story-title")
+            if let report = model.report {
+                HStack(spacing: 24) {
+                    resultMetric("有效样本", value: "\(report.valid ?? 0)")
+                    resultMetric("已处理", value: "\(report.completed) / \(report.planned)")
+                    resultMetric("尝试次数", value: "\(report.attempts ?? 0)")
+                }
+                .padding(.vertical, 4)
+            }
+            Text(model.scene.explanation).font(.system(size: 13))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(model.isDemo ? "模拟结果，不代表真实模型身份。" : "第三方指纹推断，匹配度不是身份概率，不构成真实性保证。")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("detection-result-summary")
+    }
+
+    private func resultMetric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 17, weight: .semibold)).monospacedDigit()
+        }
         .accessibilityElement(children: .combine)
     }
 
@@ -121,7 +167,7 @@ struct DetectionView: View {
     private var configuration: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text("这次查谁？").font(.system(size: 13, weight: .semibold))
+                Text(model.hasCompletedReport ? "再次检测" : "检测对象").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if model.remoteMayBeActive {
                     Text((model.testedCandidate ?? model.candidate).rawValue)
@@ -145,8 +191,7 @@ struct DetectionView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.vertical, 8)
     }
 
     private var consent: some View {
@@ -193,7 +238,6 @@ struct DetectionView: View {
 
     private var technicalDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(model.message).font(.system(size: 12)).textSelection(.enabled)
             if let report = model.report {
                 Text("网站原始结论：\(report.verdict)")
                 Text("已处理 \(report.completed)/\(report.planned) · 有效样本 \(report.valid ?? 0) · 尝试 \(report.attempts ?? 0) 次 · 重试 \(report.retries_used ?? 0) 次")

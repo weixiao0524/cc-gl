@@ -39,10 +39,46 @@ final class AppModel: ObservableObject {
 
     var isDirty: Bool { draft != baseline || apiKey != baselineKey }
     var isSaved: Bool { profiles.contains { $0.id == draft.id } }
-    var validDraft: Bool {
-        (try? ConfigDocument.validateURL(draft.baseURL)) != nil &&
-        (try? AuthDocument.validateKey(apiKey)) != nil &&
-        !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    enum DraftField: Hashable { case name, baseURL, apiKey }
+
+    func validationError(for field: DraftField) -> String? {
+        switch field {
+        case .name:
+            return draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请输入收藏名称。" : nil
+        case .baseURL:
+            do { try ConfigDocument.validateURL(draft.baseURL); return nil }
+            catch { return safeMessage(error) }
+        case .apiKey:
+            do { try AuthDocument.validateKey(apiKey); return nil }
+            catch { return safeMessage(error) }
+        }
+    }
+
+    var validConnection: Bool { validationError(for: .baseURL) == nil && validationError(for: .apiKey) == nil }
+    var validDraft: Bool { validConnection && validationError(for: .name) == nil }
+    var saveDisabledReason: String? {
+        if !storeReadable { return "收藏无法读取，请检查钥匙串和文件访问状态。" }
+        if let error = validationError(for: .name) { return error }
+        if let error = validationError(for: .baseURL) { return error }
+        if let error = validationError(for: .apiKey) { return error }
+        return isSaved && !isDirty ? "收藏没有新修改。" : nil
+    }
+    var applyDisabledReason: String? {
+        if needsRecovery { return "请先恢复上次配置。" }
+        if current == nil { return "尚未成功读取本地配置。" }
+        if let error = validationError(for: .baseURL) { return error }
+        if let error = validationError(for: .apiKey) { return error }
+        return matchesCurrent ? "地址和密钥已与本地文件一致。" : nil
+    }
+    var collectionStatus: String {
+        if isDirty { return "收藏有未保存修改" }
+        return isSaved ? "收藏已保存" : "尚未收藏"
+    }
+
+    func filteredProfiles(matching query: String) -> [Profile] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return profiles }
+        return profiles.filter { $0.name.localizedStandardContains(query) || $0.baseURL.localizedStandardContains(query) }
     }
     var matchesCurrent: Bool { current?.config.baseURL == draft.baseURL && current?.auth.apiKey == apiKey }
     var destinationHost: String { URLComponents(string: draft.baseURL)?.host ?? draft.baseURL }

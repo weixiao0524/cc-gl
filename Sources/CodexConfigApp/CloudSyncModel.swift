@@ -60,8 +60,9 @@ final class CloudSyncModel: ObservableObject {
         if panel.runModal() == .OK { folder = panel.url; error = nil }
     }
 
-    func connect(password: String, create: Bool) async {
-        guard let folder, !busy, !enabled else { return }
+    @discardableResult
+    func connect(password: String, create: Bool) async -> Bool {
+        guard let folder, !busy, !enabled else { return false }
         busy = true; error = nil; status = "正在连接…"
         defer { busy = false }
         do {
@@ -87,7 +88,11 @@ final class CloudSyncModel: ObservableObject {
             enabled = true
             status = "等待同步"
             startTimer()
-        } catch { self.error = message(error); status = "连接失败" }
+            return true
+        } catch {
+            self.error = message(error); status = "连接失败"
+            return false
+        }
     }
 
     func syncNow() async {
@@ -148,24 +153,48 @@ final class CloudSyncModel: ObservableObject {
     }
 }
 
+struct SyncConnectionForm {
+    var password = ""
+    var confirmation = ""
+    var create = false
+
+    var passwordError: String? {
+        if password.isEmpty { return "请输入同步密码。" }
+        if password.utf8.count > 1024 { return "同步密码不能超过 1024 字节。" }
+        return create && password.count < 12 ? "同步密码至少需要 12 个字符。" : nil
+    }
+    var confirmationError: String? {
+        guard create else { return nil }
+        return password == confirmation ? nil : "两次输入的密码不一致。"
+    }
+    var isValid: Bool { passwordError == nil && confirmationError == nil }
+
+    mutating func finishConnection(succeeded: Bool) {
+        guard succeeded else { return }
+        password = ""
+        confirmation = ""
+    }
+}
+
 struct CloudSyncView: View {
     @ObservedObject var model: CloudSyncModel
     @Environment(\.dismiss) private var dismiss
-    @State private var password = ""
-    @State private var confirmation = ""
-    @State private var create = false
+    @State private var form = SyncConnectionForm()
+    @State private var visitedFields: Set<Field> = []
+    @FocusState private var focusedField: Field?
+    private enum Field: Hashable { case password, confirmation }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Label("iCloud 同步", systemImage: "icloud").font(.title2.weight(.semibold))
                 Spacer()
-                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
             }
             Text("收藏和 API Key 跨 Mac 自动同步。当前线路与 YOLO 各自独立。")
                 .font(.callout).foregroundStyle(.secondary)
             if model.enabled {
-                Label(model.status, systemImage: model.busy ? "arrow.triangle.2.circlepath" : "icloud")
+                syncStatus
                 Text(model.detail).font(.caption).foregroundStyle(.secondary)
                 if let date = model.lastSync {
                     Text("最近合并：\(date.formatted(date: .abbreviated, time: .standard))")
@@ -179,35 +208,81 @@ struct CloudSyncView: View {
                     Button("立即同步") { Task { await model.syncNow() } }.buttonStyle(.borderedProminent)
                 }.disabled(model.busy)
             } else {
-                Picker("同步空间", selection: $create) {
+                Picker("同步空间", selection: $form.create) {
                     Text("连接已有").tag(false)
                     Text("首次创建").tag(true)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).disabled(model.busy)
                 Button { model.chooseFolder() } label: {
                     Label(model.folder?.lastPathComponent ?? "选择 iCloud Drive 文件夹", systemImage: "folder")
                 }
-                SecureField(create ? "设置同步密码（至少 12 个字符）" : "输入另一台 Mac 设置的同步密码", text: $password)
-                if create { SecureField("再次输入同步密码", text: $confirmation) }
-                Text(create ? "请妥善保存密码；在其他 Mac 连接时需要它，遗忘后无法解密。已有本机收藏将上传到所选空间。" : "解锁后自动合并两端收藏，API Key 写入本机钥匙串。已有空间请勿重新创建。")
+                .disabled(model.busy)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("同步密码").font(.system(size: 13, weight: .medium))
+                    SecureField(form.create ? "至少 12 个字符" : "另一台 Mac 设置的密码", text: $form.password)
+                        .focused($focusedField, equals: .password)
+                        .accessibilityLabel("同步密码")
+                        .accessibilityIdentifier("sync-password")
+                        .disabled(model.busy)
+                    if visitedFields.contains(.password), let error = form.passwordError {
+                        validationMessage(error)
+                    }
+                }
+                if form.create {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("确认密码").font(.system(size: 13, weight: .medium))
+                        SecureField("再次输入同步密码", text: $form.confirmation)
+                            .focused($focusedField, equals: .confirmation)
+                            .accessibilityLabel("确认同步密码")
+                            .accessibilityIdentifier("sync-password-confirmation")
+                            .disabled(model.busy)
+                        if (visitedFields.contains(.confirmation) || !form.confirmation.isEmpty), let error = form.confirmationError {
+                            validationMessage(error)
+                        }
+                    }
+                }
+                Text(form.create ? "请妥善保存密码；在其他 Mac 连接时需要它，遗忘后无法解密。已有本机收藏将上传到所选空间。" : "解锁后自动合并两端收藏，API Key 写入本机钥匙串。已有空间请勿重新创建。")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("内容使用 AES-256-GCM 加密；本机钥匙串保存解锁密钥，重启应用后自动继续同步。")
                     .font(.caption).foregroundStyle(.secondary)
-                Button(create ? "创建并启用同步" : "解锁并启用同步") {
-                    let supplied = password
-                    password = ""; confirmation = ""
-                    Task { await model.connect(password: supplied, create: create) }
+                if model.busy { syncStatus }
+                Button(model.busy ? "正在连接…" : form.create ? "创建并启用同步" : "解锁并启用同步") {
+                    let supplied = form
+                    focusedField = nil
+                    Task {
+                        let succeeded = await model.connect(password: supplied.password, create: supplied.create)
+                        form.finishConnection(succeeded: succeeded)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.folder == nil || password.isEmpty || model.busy || (create && (password.count < 12 || password != confirmation)))
+                .disabled(model.folder == nil || !form.isValid || model.busy)
+                .help(model.folder == nil ? "请先选择同步文件夹" : form.passwordError ?? form.confirmationError ?? "启用加密同步")
             }
             if let folder = model.folder {
                 Text(folder.path).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
             }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
-        .padding(24).frame(width: 440)
+        .padding(24).frame(width: 460)
         .textFieldStyle(.roundedBorder)
         .interactiveDismissDisabled(model.busy)
+        .onChange(of: focusedField) { [focusedField] _ in
+            if let focusedField { visitedFields.insert(focusedField) }
+        }
+        .onChange(of: form.create) { _ in visitedFields = [] }
+    }
+
+    private var syncStatus: some View {
+        HStack(spacing: 8) {
+            if model.busy { ProgressView().controlSize(.small) }
+            else { Image(systemName: "icloud") }
+            Text(model.status).font(.system(size: 13))
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func validationMessage(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.circle")
+            .font(.system(size: 11)).foregroundStyle(.red)
     }
 }
 

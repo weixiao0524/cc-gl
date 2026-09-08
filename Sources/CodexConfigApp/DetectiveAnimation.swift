@@ -21,6 +21,7 @@ enum DetectiveStyle {
 struct DetectiveAnimation: View {
     let scene: InvestigationScene
     var motionDisabled = false
+    var height: CGFloat = 210
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var appPhase
@@ -42,7 +43,7 @@ struct DetectiveAnimation: View {
             let time = playback.scene == scene ? playback.time(at: ProcessInfo.processInfo.systemUptime) : 0
             DetectiveFrame(scene: scene, time: time, dark: scheme == .dark, motionEnabled: animated)
         }
-        .frame(height: 210)
+        .frame(height: height)
         .accessibilityHidden(true)
         .onAppear { visible = true }
         .onDisappear {

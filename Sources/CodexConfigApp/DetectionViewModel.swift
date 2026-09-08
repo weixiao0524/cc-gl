@@ -29,6 +29,8 @@ final class DetectionViewModel: ObservableObject, Identifiable {
     var canDismiss: Bool { !remoteMayBeActive || phase == .uncertain }
     var isWorking: Bool { [.connecting, .submitting, .running, .stopping].contains(phase) }
     var scene: InvestigationScene { InvestigationScene(phase: phase, report: report) }
+    var hasCompletedReport: Bool { report?.isTerminal == true }
+    var reportCandidate: DetectionCandidate { testedCandidate ?? candidate }
 
     init(baseURL: String, apiKey: String, profileName: String, isDemo: Bool) {
         self.baseURL = baseURL; self.apiKey = apiKey; self.profileName = profileName; self.isDemo = isDemo

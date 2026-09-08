@@ -8,13 +8,18 @@ struct ContentView: View {
     @State private var showConfigurationInfo = false
     @State private var showCloudSync = false
     @State private var showMCP = false
-    private let accent = Color(red: 0.12, green: 0.48, blue: 0.43)
+    @State private var search = ""
+    @State private var visitedFields: Set<AppModel.DraftField> = []
+    @FocusState private var focusedField: AppModel.DraftField?
+    @Environment(\.colorScheme) private var colorScheme
+    private var accent: Color {
+        colorScheme == .dark ? Color(red: 0.47, green: 0.83, blue: 0.71) : Color(red: 0.12, green: 0.48, blue: 0.43)
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar.frame(width: 210)
-            Divider()
-            editor
+        HSplitView {
+            sidebar.frame(minWidth: 200, idealWidth: 230, maxWidth: 320)
+            editor.frame(minWidth: 550)
         }
         .frame(minWidth: 800, minHeight: 590)
         .tint(accent)
@@ -53,7 +58,14 @@ struct ContentView: View {
             Button("取消", role: .cancel) {}
             Button("删除收藏", role: .destructive) { model.delete() }
         } message: { Text("将删除“\(model.draft.name)”及其收藏密钥，不修改 Codex 当前使用的配置。") }
-        .onChange(of: model.selection) { _ in revealKey = false }
+        .onChange(of: model.selection) { _ in
+            revealKey = false
+            focusedField = nil
+            visitedFields = []
+        }
+        .onChange(of: focusedField) { [focusedField] _ in
+            if let focusedField { visitedFields.insert(focusedField) }
+        }
     }
 
     private var sidebar: some View {
@@ -63,15 +75,14 @@ struct ContentView: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(accent)
                     .frame(width: 38, height: 38)
-                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Codex 配置").font(.headline)
-                    Text("线路切换 · 权限设置").font(.caption).foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 26)
 
-            sidebarButton(title: "当前文件", subtitle: "读取本机正在使用的配置", icon: "doc.text", selected: model.selection == nil) {
+            sidebarButton(title: "本地配置", subtitle: "config.toml · auth.json", icon: "doc.text", selected: model.selection == nil) {
                 model.request { model.useCurrent() }
             }
             .padding(.horizontal, 10)
@@ -83,20 +94,38 @@ struct ContentView: View {
             }
             .padding(.horizontal, 20).padding(.top, 28).padding(.bottom, 8)
 
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索收藏", text: $search)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("搜索收藏名称或地址")
+                    .accessibilityIdentifier("profile-search")
+                if !search.isEmpty {
+                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).help("清除搜索").accessibilityLabel("清除搜索")
+                }
+            }
+            .font(.system(size: 12)).padding(8)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 12).padding(.bottom, 8)
+
             ScrollView {
                 VStack(spacing: 5) {
-                    ForEach(model.profiles) { profile in
+                    ForEach(model.filteredProfiles(matching: search)) { profile in
                         sidebarButton(title: profile.name,
                                       subtitle: URLComponents(string: profile.baseURL)?.host ?? profile.baseURL,
-                                      icon: "server.rack", selected: model.selection == profile.id) {
+                                      icon: "server.rack", selected: model.selection == profile.id,
+                                      active: model.activeProfileIDs.contains(profile.id), fullSubtitle: profile.baseURL) {
                             model.request { model.select(profile) }
                         }
                     }
                     if model.profiles.isEmpty {
-                        Text("保存常用地址和密钥，\n下次直接选中应用。")
+                        Text("暂无收藏")
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
+                    } else if model.filteredProfiles(matching: search).isEmpty {
+                        Text("没有匹配的收藏").font(.caption).foregroundStyle(.secondary).padding(12)
                     }
                     if model.selection != nil && !model.isSaved {
                         sidebarButton(title: "新配置", subtitle: "尚未保存", icon: "pencil", selected: true) {}
@@ -114,86 +143,132 @@ struct ContentView: View {
                 Image(systemName: model.isDemo ? "testtube.2" : "internaldrive")
                 Text(model.isDemo ? "演示模式 · 隔离数据" : "状态栏快捷切换 · 按需检测")
             }
-            .font(.caption2).foregroundStyle(.secondary)
+            .font(.system(size: 11)).foregroundStyle(.secondary)
             .padding(.horizontal, 18).padding(.bottom, 18)
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
-    private func sidebarButton(title: String, subtitle: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func sidebarButton(title: String, subtitle: String, icon: String, selected: Bool, active: Bool = false, fullSubtitle: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon).font(.system(size: 16)).frame(width: 22)
                     .foregroundStyle(selected ? accent : .secondary)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.system(size: 13, weight: selected ? .semibold : .medium)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                if active {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(accent)
+                        .help("地址和密钥与本地文件一致")
+                }
             }
             .padding(.horizontal, 11).padding(.vertical, 11)
             .contentShape(Rectangle())
-            .background(selected ? accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 9))
+            .background(selected ? accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(title)，\(subtitle)")
+        .help("\(title)\n\(fullSubtitle ?? subtitle)" + (active ? "\n地址和密钥与本地文件一致" : ""))
+        .accessibilityLabel("\(title)，\(fullSubtitle ?? subtitle)" + (active ? "，与本地文件一致" : ""))
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(model.selection == nil ? "当前配置" : "编辑配置")
-                        .font(.system(size: 26, weight: .semibold))
-                    Text("选择地址，保存密钥，需要时一键应用。")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if model.matchesCurrent {
-                    Label("与当前文件一致", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(accent)
-                        .padding(.horizontal, 10).padding(.vertical, 7)
-                        .background(accent.opacity(0.08), in: Capsule())
-                } else if model.isDirty {
-                    Text("未保存").font(.caption).foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 18) {
-                fieldLabel("配置名称", hint: "只用于本地收藏") {
-                    TextField("例如：日常使用", text: $model.draft.name)
-                        .accessibilityIdentifier("profile-name")
-                }
-                fieldLabel("Base URL", hint: "完整保留输入地址，不自动添加 /v1") {
-                    TextField("https://api.example.com/v1", text: $model.draft.baseURL)
-                        .font(.system(size: 13, design: .monospaced))
-                        .accessibilityIdentifier("base-url")
-                }
-                fieldLabel("API Key", hint: "收藏密钥存入 macOS 钥匙串") {
-                    HStack(spacing: 8) {
-                        Group {
-                            if revealKey { TextField("输入 API Key", text: $model.apiKey) }
-                            else { SecureField("输入 API Key", text: $model.apiKey) }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    editorHeader
+                    connectionFields
+                    HStack {
+                        Spacer()
+                        Button { model.openDetector() } label: {
+                            Label("模型检测", systemImage: "magnifyingglass")
                         }
-                        .font(.system(size: 13, design: .monospaced))
-                        .accessibilityIdentifier("api-key")
-                        Button { revealKey.toggle() } label: {
-                            Image(systemName: revealKey ? "eye.slash" : "eye").frame(width: 20)
-                        }
-                        .buttonStyle(.borderless)
-                        .help(revealKey ? "隐藏密钥" : "显示密钥")
-                        .accessibilityLabel(revealKey ? "隐藏密钥" : "显示密钥")
+                        .disabled(!model.validConnection)
+                        .help("检测编辑区的地址与密钥；开始前确认费用和数据用途")
                     }
+                    Divider()
+                    globalSettings
+                }
+                .padding(24)
+            }
+            Divider()
+            editorFooter
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var editorHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(model.selection == nil ? "本地配置" : model.isSaved ? "编辑收藏" : "新增收藏")
+                .font(.system(size: 22, weight: .semibold))
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) { collectionStatus; fileStatus }
+                VStack(alignment: .leading, spacing: 6) { collectionStatus; fileStatus }
+            }
+            .font(.system(size: 12))
+        }
+    }
+
+    private var collectionStatus: some View {
+        Label(model.collectionStatus, systemImage: model.isDirty ? "pencil.circle" : model.isSaved ? "bookmark.fill" : "bookmark")
+            .foregroundStyle(model.isDirty ? Color.orange : Color.secondary)
+            .accessibilityIdentifier("collection-status")
+    }
+
+    private var fileStatus: some View {
+        Label(model.current == nil ? "本地配置不可用" : model.matchesCurrent ? "与本地文件一致" : "未写入本地文件",
+              systemImage: model.matchesCurrent ? "checkmark.circle.fill" : "doc.text")
+            .foregroundStyle(model.matchesCurrent ? accent : .secondary)
+            .accessibilityIdentifier("file-status")
+    }
+
+    private var connectionFields: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            fieldLabel("收藏名称", hint: "仅收藏时必填", field: .name) {
+                TextField("例如：日常使用", text: $model.draft.name)
+                    .focused($focusedField, equals: .name)
+                    .accessibilityLabel("收藏名称")
+                    .accessibilityIdentifier("profile-name")
+            }
+            fieldLabel("Base URL", hint: "完整地址，不自动添加 /v1", field: .baseURL) {
+                TextField("https://api.example.com/v1", text: $model.draft.baseURL)
+                    .font(.system(size: 13, design: .monospaced))
+                    .focused($focusedField, equals: .baseURL)
+                    .accessibilityLabel("Base URL")
+                    .accessibilityIdentifier("base-url")
+            }
+            fieldLabel("API Key", hint: "收藏密钥存于 macOS 钥匙串", field: .apiKey) {
+                HStack(spacing: 8) {
+                    Group {
+                        if revealKey { TextField("输入 API Key", text: $model.apiKey) }
+                        else { SecureField("输入 API Key", text: $model.apiKey) }
+                    }
+                    .font(.system(size: 13, design: .monospaced))
+                    .focused($focusedField, equals: .apiKey)
+                    .accessibilityLabel("API Key")
+                    .accessibilityIdentifier("api-key")
+                    Button { revealKey.toggle() } label: {
+                        Image(systemName: revealKey ? "eye.slash" : "eye").frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(revealKey ? "隐藏密钥" : "显示密钥")
+                    .accessibilityLabel(revealKey ? "隐藏密钥" : "显示密钥")
                 }
             }
-            .textFieldStyle(.roundedBorder)
-            .controlSize(.large)
-            .padding(22)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.primary.opacity(0.06), lineWidth: 1))
+        }
+        .textFieldStyle(.roundedBorder)
+        .controlSize(.large)
+    }
 
+    private var globalSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("全局设置").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text("本机 · 即时保存").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             HStack(spacing: 10) {
                 Toggle(isOn: Binding(
                     get: { model.current?.config.yoloEnabled ?? false },
@@ -208,7 +283,7 @@ struct ContentView: View {
                 .disabled(model.current == nil || model.needsRecovery)
 
                 Text(model.current == nil ? "未读取" : model.current?.config.yoloEnabled == true ? "免审批 · 完全访问" : "未开启")
-                    .font(.caption2)
+                    .font(.system(size: 11))
                     .foregroundStyle(model.current?.config.yoloEnabled == true ? accent : .secondary)
 
                 Button { showConfigurationInfo.toggle() } label: {
@@ -247,17 +322,12 @@ struct ContentView: View {
                     mcpModule
                         .frame(width: 360, height: 420)
                 }
-                Button { model.openDetector() } label: {
-                    Label("模型检测", systemImage: "magnifyingglass")
-                }
-                .controlSize(.small)
-                .disabled(model.draft.baseURL.isEmpty || model.apiKey.isEmpty)
-                .help("使用当前地址和 Key 打开模型侦探；开始检测前会说明费用与数据用途")
             }
-            .padding(.horizontal, 4)
+        }
+    }
 
-            Spacer(minLength: 0)
-
+    private var editorFooter: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if model.needsRecovery {
                 Label("发现未完成的切换，请先恢复上次配置。", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
@@ -267,29 +337,45 @@ struct ContentView: View {
                 if model.isSaved {
                     Button(role: .destructive) { model.showDelete = true } label: {
                         Image(systemName: "trash")
-                    }.help("删除收藏，不修改 Codex 文件")
+                    }.help("删除收藏，不修改 Codex 文件").accessibilityLabel("删除收藏")
                 }
                 Button("恢复上次配置") { model.showRestore = true }
                     .disabled(!model.hasBackup)
                 Spacer(minLength: 0)
                 Button("保存到收藏") { model.save() }
-                    .disabled(!model.validDraft || !model.storeReadable)
+                    .disabled(model.saveDisabledReason != nil)
+                    .help(model.saveDisabledReason ?? "保存地址和密钥，不修改本地配置")
                 Button("应用此配置") { model.showApply = true }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!model.validDraft || model.current == nil || model.needsRecovery || model.matchesCurrent)
+                    .foregroundStyle(model.applyDisabledReason == nil ? (colorScheme == .dark ? Color.black : .white) : .secondary)
+                    .disabled(model.applyDisabledReason != nil)
+                    .help(model.applyDisabledReason ?? "将地址和密钥写入本地配置，不自动保存收藏")
             }
             .controlSize(.large)
 
+            if let issue = actionIssue {
+                Text(issue).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: model.statusIsError ? "exclamationmark.circle" : "info.circle")
-                Text(model.status).textSelection(.enabled).lineLimit(3)
+                Text(model.status).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
             .font(.caption).foregroundStyle(model.statusIsError ? Color.orange : .secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(minHeight: 30, alignment: .top)
         }
-        .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 14)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 24).padding(.vertical, 16)
+    }
+
+    private var actionIssue: String? {
+        if !model.storeReadable { return "收藏不可用，请检查钥匙串和文件访问状态。" }
+        if model.current == nil { return "本地配置不可用，暂时无法应用线路。" }
+        if model.validationError(for: .baseURL) != nil { return "请填写有效的 Base URL 后保存或应用。" }
+        if model.validationError(for: .apiKey) != nil { return "请填写有效的 API Key 后保存或应用。" }
+        if model.validationError(for: .name) != nil { return "收藏需要名称；直接应用线路无需名称。" }
+        return nil
     }
 
     private var mcpModule: some View {
@@ -298,7 +384,7 @@ struct ContentView: View {
                 Image(systemName: "puzzlepiece.extension")
                     .foregroundStyle(accent)
                     .frame(width: 32, height: 32)
-                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("MCP 管理").font(.system(size: 14, weight: .semibold))
                     Text("选择要启用的服务").font(.caption).foregroundStyle(.secondary)
@@ -373,14 +459,17 @@ struct ContentView: View {
         }
     }
 
-    private func fieldLabel<Content: View>(_ title: String, hint: String, @ViewBuilder content: () -> Content) -> some View {
+    private func fieldLabel<Content: View>(_ title: String, hint: String, field: AppModel.DraftField, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(title).font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(hint).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+            Text(title).font(.system(size: 13, weight: .semibold))
             content()
+            if visitedFields.contains(field), let error = model.validationError(for: field) {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.system(size: 11)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
         }
     }
 }

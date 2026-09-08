@@ -62,7 +62,7 @@ struct CodexConfigApp: App {
             CommandGroup(replacing: .saveItem) {
                 Button("保存到收藏") { model.save() }
                     .keyboardShortcut("s")
-                    .disabled(!model.validDraft || !model.storeReadable)
+                    .disabled(model.saveDisabledReason != nil)
             }
         }
         MenuBarExtra("Codex 配置", systemImage: "slider.horizontal.3") {
