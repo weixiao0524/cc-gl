@@ -1,0 +1,90 @@
+openapi: 3.1.0
+info:
+  title: meowllm.top public detector API (observed)
+  version: '2026-09-08'
+  description: >-
+    Observed from live /app.js, read-only /api/bootstrap and a public report.
+    This is an undocumented integration, not an official stable API contract.
+    No real API key or paid detection was submitted during development.
+servers:
+  - url: https://meowllm.top
+paths:
+  /api/bootstrap:
+    get:
+      summary: Establish in-memory owner cookie and receive CSRF token / benchmark tiers
+      responses:
+        '200':
+          description: csrf, instance, benchmarks, public_site, version, history_limit; sets __Host-meow_owner
+  /api/runs:
+    post:
+      summary: Create a publicly visible paid detection run (never auto-retry)
+      parameters:
+        - in: header
+          name: X-Meow-Token
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, claimed_model, request_model, base_url, key, tier, workers, retry_budget, public_report]
+              properties:
+                mode: {const: gpt}
+                claimed_model: {enum: [gpt-6-astra, gpt-5.6-sol]}
+                request_model: {type: string}
+                base_url: {type: string, format: uri}
+                key: {type: string, writeOnly: true, minLength: 8, maxLength: 4096}
+                tier: {const: low}
+                workers: {const: 3}
+                retry_budget: {type: integer, minimum: 0}
+                site_group: {type: string}
+                public_report: {const: true}
+      responses:
+        '200': {description: Created run with id; exact creation status is not empirically verified}
+        '201': {description: Client also accepts other 2xx responses containing id}
+        '400': {description: 'error.code validation failure'}
+        '403': {description: 'Expired session / CSRF / public consent failure'}
+        '429': {description: 'Site capacity or submission rate limit'}
+  /api/reports/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: {type: string}
+    get:
+      summary: Read progress / fingerprint report; can_stop depends on owner cookie
+      responses:
+        '200': {description: 'id, status, planned, completed, valid, attempts, retry_budget, retries_used, failure, fingerprint, benchmark, can_stop'}
+  /api/runs/{id}/stop:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: {type: string}
+    post:
+      summary: Request cancellation of own run, then poll until terminal status
+      parameters:
+        - in: header
+          name: X-Meow-Token
+          required: true
+          schema: {type: string}
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, maxProperties: 0}
+      responses:
+        '200': {description: Stop acknowledged (does not itself prove all work has stopped)}
+        '403': {description: 'not_your_run'}
+x-discovery-notes:
+  tracking: 'bd CLI unavailable; discovery tracked in this versioned spec instead.'
+  sources:
+    - https://meowllm.top/
+    - https://meowllm.top/app.js
+    - https://meowllm.top/api/bootstrap
+  session: 'Ephemeral owner cookie + X-Meow-Token; desktop sends matching Origin and Referer; redirects rejected.'
+  cost: 'GPT low tier currently 20 requests; default retry budget ceil(20/2)=10, maximum 30 attempts. Low means detector sample tier, not model reasoning_effort.'
+  privacy: 'Key passes through meowllm.top and its Cloudflare proxy; endpoint and report publicly visible; website claims not to retain keys long-term.'
+  limits: 'Frontend mentions 2 second minimum before submit, 30 second HTTP timeout, 15 minute run lifetime, max 8 runs per visitor.'
+  verification: 'Public metadata and owner session verified live using native URLSession. Empty POST /api/runs returned 400 with error.code, without id. Valid creation and cancellation tested against mocks only; no key submitted or paid run created.'
