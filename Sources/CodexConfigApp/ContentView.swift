@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var revealKey = false
     @State private var showConfigurationInfo = false
     @State private var showCloudSync = false
+    @State private var showMCP = false
     private let accent = Color(red: 0.12, green: 0.48, blue: 0.43)
 
     var body: some View {
@@ -237,6 +238,15 @@ struct ContentView: View {
                 }
 
                 Spacer(minLength: 8)
+                Button { showMCP.toggle() } label: {
+                    Label("MCP 管理", systemImage: "puzzlepiece.extension")
+                }
+                .controlSize(.small)
+                .accessibilityIdentifier("mcp-management")
+                .popover(isPresented: $showMCP, arrowEdge: .bottom) {
+                    mcpModule
+                        .frame(width: 360, height: 420)
+                }
                 Button { model.openDetector() } label: {
                     Label("模型检测", systemImage: "magnifyingglass")
                 }
@@ -280,6 +290,87 @@ struct ContentView: View {
         }
         .padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 14)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var mcpModule: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(accent)
+                    .frame(width: 32, height: 32)
+                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MCP 管理").font(.system(size: 14, weight: .semibold))
+                    Text("选择要启用的服务").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { showMCP = false } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(.primary.opacity(0.05), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭 MCP 管理")
+            }
+            .padding(18)
+            Divider().padding(.horizontal, 18)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let config = model.current?.config {
+                        switch Result(catching: { try config.mcpServers() }) {
+                        case .success(let servers):
+                            if servers.isEmpty {
+                                Text("尚未配置 MCP 服务")
+                                    .font(.caption).foregroundStyle(.secondary).padding(12)
+                            }
+                            ForEach(servers) { server in
+                                HStack(spacing: 12) {
+                                    Circle()
+                                        .fill(server.enabled ? accent : Color.secondary.opacity(0.25))
+                                        .frame(width: 6, height: 6)
+                                    Text(server.name)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1).truncationMode(.middle)
+                                        .help(server.name)
+                                    Spacer(minLength: 8)
+                                    Toggle(server.name, isOn: Binding(
+                                        get: { server.enabled },
+                                        set: { model.setMCP(server.name, enabled: $0) }
+                                    ))
+                                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                                    .fixedSize()
+                                    .disabled(model.needsRecovery)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 40)
+                                .background(server.enabled ? accent.opacity(0.055) : Color.primary.opacity(0.025),
+                                            in: RoundedRectangle(cornerRadius: 8))
+                            }
+                        case .failure:
+                            Text("MCP 配置无法读取，请检查服务表和 enabled 字段。")
+                                .font(.caption).foregroundStyle(.orange).padding(12)
+                        }
+                    } else {
+                        Text("请先成功读取 Codex 配置")
+                            .font(.caption).foregroundStyle(.secondary).padding(12)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18).padding(.vertical, 12)
+            }
+            Divider().padding(.horizontal, 18)
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "info.circle")
+                Text("切换即保存，重启 Codex 或相关会话后生效。")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .padding(.horizontal, 18).padding(.vertical, 14)
+        }
     }
 
     private func fieldLabel<Content: View>(_ title: String, hint: String, @ViewBuilder content: () -> Content) -> some View {

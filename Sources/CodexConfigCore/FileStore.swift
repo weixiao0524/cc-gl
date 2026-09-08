@@ -83,6 +83,11 @@ public struct CurrentConfiguration {
     public let auth: AuthDocument
 }
 
+public struct MCPChange: Codable {
+    public let name: String
+    public let enabled: Bool
+}
+
 private struct Journal: Codable {
     enum Phase: String, Codable { case pending, applied, restoring }
     let codexPath: String
@@ -91,6 +96,7 @@ private struct Journal: Codable {
     let date: Date
     var phase: Phase
     var yolo: Bool? = nil
+    var mcp: MCPChange? = nil
 }
 
 public final class ConfigurationService {
@@ -120,7 +126,7 @@ public final class ConfigurationService {
                                         auth: AuthDocument(data: snapshot.auth))
     }
 
-    public func apply(baseURL: String, apiKey: String, expected: FileSnapshot, yolo: Bool? = nil) throws {
+    public func apply(baseURL: String, apiKey: String, expected: FileSnapshot, yolo: Bool? = nil, mcp: MCPChange? = nil) throws {
         try locked {
             if needsRecovery { throw ConfigError("上次写入未完成或备份不可读。请先恢复上次配置，不会继续覆盖。") }
             let current = try capture()
@@ -129,13 +135,14 @@ public final class ConfigurationService {
             let authDocument = try AuthDocument(data: current.auth)
             try ConfigDocument.validateURL(baseURL)
             try AuthDocument.validateKey(apiKey)
-            if yolo == nil && configDocument.baseURL == baseURL && authDocument.apiKey == apiKey { return }
+            if yolo == nil && mcp == nil && configDocument.baseURL == baseURL && authDocument.apiKey == apiKey { return }
             var config = configDocument.baseURL == baseURL ? current.config : try configDocument.replacingBaseURL(baseURL)
             if let yolo { config = try ConfigDocument(data: config).replacingYOLO(yolo) }
+            if let mcp { config = try ConfigDocument(data: config).replacingMCP(mcp.name, enabled: mcp.enabled) }
             let auth = authDocument.apiKey == apiKey ? current.auth : try authDocument.replacingAPIKey(apiKey)
             let next = FileSnapshot(config: config, auth: auth, configMode: current.configMode, authMode: current.authMode)
             guard next != current else { return }
-            var journal = Journal(codexPath: codexDirectory.path, before: current, after: next, date: Date(), phase: .pending, yolo: yolo)
+            var journal = Journal(codexPath: codexDirectory.path, before: current, after: next, date: Date(), phase: .pending, yolo: yolo, mcp: mcp)
             try saveJournal(journal)
             do {
                 try replace(config, at: configURL, mode: current.configMode) {
@@ -164,6 +171,13 @@ public final class ConfigurationService {
         let config = try ConfigDocument(data: expected.config)
         let auth = try AuthDocument(data: expected.auth)
         try apply(baseURL: config.baseURL, apiKey: auth.apiKey, expected: expected, yolo: enabled)
+    }
+
+    public func setMCP(_ name: String, enabled: Bool, expected: FileSnapshot) throws {
+        let config = try ConfigDocument(data: expected.config)
+        let auth = try AuthDocument(data: expected.auth)
+        try apply(baseURL: config.baseURL, apiKey: auth.apiKey, expected: expected,
+                  mcp: MCPChange(name: name, enabled: enabled))
     }
 
     public func restore() throws {
@@ -224,6 +238,7 @@ public final class ConfigurationService {
         let afterAuth = try AuthDocument(data: journal.after.auth)
         var expectedConfig = beforeConfig.baseURL == afterConfig.baseURL ? journal.before.config : try beforeConfig.replacingBaseURL(afterConfig.baseURL)
         if let yolo = journal.yolo { expectedConfig = try ConfigDocument(data: expectedConfig).replacingYOLO(yolo) }
+        if let mcp = journal.mcp { expectedConfig = try ConfigDocument(data: expectedConfig).replacingMCP(mcp.name, enabled: mcp.enabled) }
         let expectedAuth = beforeAuth.apiKey == afterAuth.apiKey ? journal.before.auth : try beforeAuth.replacingAPIKey(afterAuth.apiKey)
         guard expectedConfig == journal.after.config, expectedAuth == journal.after.auth,
               journal.before.configMode == journal.after.configMode,

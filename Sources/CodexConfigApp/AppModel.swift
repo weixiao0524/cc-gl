@@ -211,6 +211,17 @@ final class AppModel: ObservableObject {
         updateBackup()
     }
 
+    func setMCP(_ name: String, enabled: Bool) {
+        guard let current else { return }
+        do {
+            try service.setMCP(name, enabled: enabled, expected: current.snapshot)
+            self.current = try service.load()
+            status = "MCP “\(name)”已\(enabled ? "启用" : "停用")。请重启 Codex 或相关会话"
+            statusIsError = false
+        } catch { report(error) }
+        updateBackup()
+    }
+
     func setYOLO(_ enabled: Bool) {
         guard let current else { return }
         do {

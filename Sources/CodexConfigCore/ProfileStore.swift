@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 public struct Profile: Codable, Identifiable, Equatable {
     public var id: UUID
@@ -23,6 +24,9 @@ public protocol SecretStorage {
 
 public final class KeychainStorage: SecretStorage {
     private let service = "local.cc-gl.CodexConfig.profiles"
+    private var cache: [UUID: String] = [:]
+    private let lock = NSLock()
+    private let authContext = LAContext()
     public init() {}
 
     private func query(_ id: UUID) -> [String: Any] {
@@ -32,25 +36,35 @@ public final class KeychainStorage: SecretStorage {
     }
 
     public func read(_ id: UUID) throws -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let cached = cache[id] { return cached }
         var query = query(id)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecUseAuthenticationContext as String] = authContext
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data,
               let key = String(data: data, encoding: .utf8) else {
             throw ConfigError("无法读取钥匙串中的密钥（状态 \(status)）。可重新输入密钥后保存。")
         }
+        cache[id] = key
         return key
     }
 
     public func write(_ value: String, id: UUID) throws {
-        var query = query(id)
-        query[kSecValueData as String] = Data(value.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        query[kSecAttrLabel as String] = "Codex 配置 · API Key"
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw ConfigError("密钥保存到钥匙串失败（状态 \(status)）。") }
+        var item = query(id)
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        item[kSecAttrLabel as String] = "Codex 配置 · API Key"
+        let status = SecItemAdd(item as CFDictionary, nil)
+        if status != errSecSuccess {
+            if status == errSecDuplicateItem {
+                let updateStatus = SecItemUpdate(query(id) as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
+                guard updateStatus == errSecSuccess else { throw ConfigError("密钥保存到钥匙串失败（状态 \(updateStatus)）。") }
+            } else { throw ConfigError("密钥保存到钥匙串失败（状态 \(status)）。") }
+        }
+        lock.lock(); cache[id] = value; lock.unlock()
     }
 
     public func delete(_ id: UUID) throws {
@@ -58,6 +72,7 @@ public final class KeychainStorage: SecretStorage {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw ConfigError("无法删除钥匙串条目（状态 \(status)）。")
         }
+        lock.lock(); cache.removeValue(forKey: id); lock.unlock()
     }
 }
 

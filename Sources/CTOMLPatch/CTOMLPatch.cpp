@@ -77,3 +77,64 @@ CGLInspection cgl_permission(const char *text, size_t length, const char *key) {
     } catch (...) { r.error = strdup("无法解析权限字段，未修改文件。"); }
     return r;
 }
+
+
+CGLInspection cgl_mcp(const char *text, size_t length, size_t index) {
+    CGLInspection r{};
+    try {
+        auto root = toml::parse(std::string_view(text, length));
+        auto node = root["mcp_servers"];
+        if (!node) return r;
+        auto servers = node.as_table();
+        if (!servers) throw std::runtime_error("MCP 配置必须是表。");
+        size_t i = 0;
+        for (auto&& [key, value] : *servers) {
+            if (i++ != index) continue;
+            auto server = value.as_table();
+            if (!server) throw std::runtime_error("MCP 服务配置必须是表。");
+            auto enabled = (*server)["enabled"];
+            if (enabled && !enabled.is_boolean()) throw std::runtime_error("MCP enabled 字段必须是布尔值。");
+            std::string name(key.str());
+            if (name.find('\0') != std::string::npos) throw std::runtime_error("MCP 名称含有空字符。");
+            r.provider = strdup(name.c_str());
+            r.start = enabled.value<bool>().value_or(true) ? 1 : 0;
+            return r;
+        }
+    } catch (...) { r.error = strdup("无法解析 MCP 配置，请检查服务表和 enabled 布尔字段。"); }
+    return r;
+}
+
+CGLInspection cgl_mcp_edit(const char *text, size_t length, const char *name, int enabled) {
+    CGLInspection r{};
+    try {
+        std::string source(text, length);
+        auto root = toml::parse(source);
+        auto server = root["mcp_servers"][name].as_table();
+        if (!server) throw std::runtime_error("MCP 服务已不存在，请重新读取。");
+        auto field = (*server)["enabled"];
+        std::string replacement = enabled ? "true" : "false";
+        if (field) {
+            if (!field.is_boolean()) throw std::runtime_error("MCP enabled 字段必须是布尔值。");
+            auto region = field.node()->source();
+            auto start = offset(source, region.begin);
+            source.replace(start, offset(source, region.end) - start, replacement);
+        } else if (server->is_inline()) {
+            auto end = offset(source, server->source().end) - 1;
+            source.insert(end, (server->empty() ? "" : ", ") + std::string("enabled = ") + replacement);
+        } else {
+            auto start = offset(source, server->source().begin);
+            if (source[start] != '[') throw std::runtime_error("此 MCP 使用隐式或点分表写法，请先改为独立服务表再切换。");
+            // Locate the header's end with the parser's first key position as a bound.
+            auto end = source.find('\n', start);
+            std::string newline = source.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+            if (end == std::string::npos) source += newline + "enabled = " + replacement + newline;
+            else source.insert(end + 1, "enabled = " + replacement + newline);
+        }
+        auto verified = toml::parse(source);
+        if (verified["mcp_servers"][name]["enabled"].value<bool>() != std::optional<bool>(enabled != 0))
+            throw std::runtime_error("MCP 修改校验失败。");
+        r.base_url = strdup(source.c_str());
+    } catch (const toml::parse_error&) { r.error = strdup("MCP TOML 校验失败，未修改文件。"); }
+    catch (const std::exception& e) { r.error = strdup(e.what()); }
+    return r;
+}

@@ -193,3 +193,36 @@ public struct AuthDocument {
         return result
     }
 }
+
+public struct MCPServer: Identifiable, Equatable {
+    public var id: String { name }
+    public let name: String
+    public let enabled: Bool
+}
+
+extension ConfigDocument {
+    public func mcpServers() throws -> [MCPServer] {
+        var servers: [MCPServer] = []
+        while true {
+            let result = data.withUnsafeBytes { cgl_mcp($0.bindMemory(to: CChar.self).baseAddress, data.count, servers.count) }
+            defer { cgl_free(result) }
+            if let error = result.error { throw ConfigError(String(cString: error)) }
+            guard let name = result.provider else { return servers.sorted { $0.name < $1.name } }
+            servers.append(MCPServer(name: String(cString: name), enabled: result.start != 0))
+        }
+    }
+
+    public func replacingMCP(_ name: String, enabled: Bool) throws -> Data {
+        guard let server = try mcpServers().first(where: { $0.name == name }) else {
+            throw ConfigError("MCP 服务已不存在，请重新读取。")
+        }
+        if server.enabled == enabled { return data }
+        let result = data.withUnsafeBytes {
+            cgl_mcp_edit($0.bindMemory(to: CChar.self).baseAddress, data.count, name, enabled ? 1 : 0)
+        }
+        defer { cgl_free(result) }
+        if let error = result.error { throw ConfigError(String(cString: error)) }
+        guard let output = result.base_url else { throw ConfigError("MCP 修改失败。") }
+        return Data(String(cString: output).utf8)
+    }
+}
