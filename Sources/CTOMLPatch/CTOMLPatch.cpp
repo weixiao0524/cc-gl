@@ -138,3 +138,121 @@ CGLInspection cgl_mcp_edit(const char *text, size_t length, const char *name, in
     catch (const std::exception& e) { r.error = strdup(e.what()); }
     return r;
 }
+
+static bool bare_key(const char *key) {
+    if (!key || !*key) return false;
+    for (const char *p = key; *p; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static bool valid_encoded(const char *value) {
+    if (!value || !*value) return false;
+    const std::string_view s(value);
+    if (s.front() == '"' && s.back() == '"' && s.size() >= 2)
+        return s.find('\n') == std::string_view::npos && s.find('\r') == std::string_view::npos;
+    size_t i = s.front() == '-' ? 1 : 0;
+    if (i >= s.size()) return false;
+    for (; i < s.size(); ++i) if (s[i] < '0' || s[i] > '9') return false;
+    return true;
+}
+
+CGLInspection cgl_root_get(const char *text, size_t length, const char *key) {
+    CGLInspection r{};
+    try {
+        if (!bare_key(key)) throw std::runtime_error("根级字段名不合法，未修改文件。");
+        auto root = toml::parse(std::string_view(text, length));
+        auto it = root.find(key);
+        if (it == root.end()) return r;
+        if (it->second.is_string()) {
+            auto value = it->second.value<std::string>();
+            if (!value || value->find('\0') != std::string::npos)
+                throw std::runtime_error("根级字符串含有空字符，未修改文件。");
+            r.start = 1;
+            r.base_url = strdup(value->c_str());
+            return r;
+        }
+        if (it->second.is_integer()) {
+            auto value = it->second.value<int64_t>();
+            if (!value) throw std::runtime_error("根级整数字段无法读取，未修改文件。");
+            r.start = 2;
+            r.base_url = strdup(std::to_string(*value).c_str());
+            return r;
+        }
+        throw std::runtime_error("根级字段必须是字符串或整数，未修改文件。");
+    } catch (const toml::parse_error &) {
+        r.error = strdup("config.toml 语法不合法；请先修复原文件。未输出文件内容以避免泄露密钥。");
+    } catch (const std::exception &e) {
+        r.error = strdup(e.what());
+    } catch (...) {
+        r.error = strdup("读取根级字段时发生未知错误，未修改文件。");
+    }
+    return r;
+}
+
+CGLInspection cgl_root_set(const char *text, size_t length, const char *key, const char *encoded_value) {
+    CGLInspection r{};
+    try {
+        if (!bare_key(key)) throw std::runtime_error("根级字段名不合法，未修改文件。");
+        if (encoded_value && !valid_encoded(encoded_value))
+            throw std::runtime_error("根级字段值不合法，未修改文件。");
+        std::string source(text, length);
+        auto root = toml::parse(source);
+        auto it = root.find(key);
+        if (!encoded_value) {
+            if (it == root.end()) {
+                r.base_url = strdup(source.c_str());
+                return r;
+            }
+            if (!it->second.is_string() && !it->second.is_integer())
+                throw std::runtime_error("根级字段必须是字符串或整数，未修改文件。");
+            auto start = offset(source, it->first.source().begin);
+            auto end = offset(source, it->second.source().end);
+            while (start > 0 && (source[start - 1] == ' ' || source[start - 1] == '\t')) --start;
+            while (end < source.size() && (source[end] == ' ' || source[end] == '\t')) ++end;
+            if (end < source.size() && source[end] != '#' && source[end] != '\n' && source[end] != '\r')
+                throw std::runtime_error("无法安全删除根级字段，未修改文件。");
+            if (end < source.size() && source[end] == '\r' && end + 1 < source.size() && source[end + 1] == '\n') end += 2;
+            else if (end < source.size() && source[end] == '\n') ++end;
+            source.erase(start, end - start);
+        } else if (it == root.end()) {
+            std::string newline = source.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+            std::string line = std::string(key) + " = " + encoded_value + newline;
+            const size_t at = source.size() >= 3 && source.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
+            source.insert(at, line);
+        } else {
+            if (!it->second.is_string() && !it->second.is_integer())
+                throw std::runtime_error("根级字段必须是字符串或整数，未修改文件。");
+            auto start = offset(source, it->second.source().begin);
+            auto end = offset(source, it->second.source().end);
+            source.replace(start, end - start, encoded_value);
+        }
+        auto verified = toml::parse(source);
+        if (!encoded_value) {
+            if (verified.find(key) != verified.end()) throw std::runtime_error("根级字段删除校验失败。");
+        } else {
+            auto node = verified[key];
+            if (encoded_value[0] == '"') {
+                auto parsed = toml::parse(std::string("v = ") + encoded_value);
+                auto want = parsed["v"].value<std::string>();
+                if (!want || node.value<std::string>() != want)
+                    throw std::runtime_error("根级字符串校验失败。");
+            } else {
+                auto want = toml::parse(std::string("v = ") + encoded_value)["v"].value<int64_t>();
+                if (!want || node.value<int64_t>() != want)
+                    throw std::runtime_error("根级整数字段校验失败。");
+            }
+        }
+        r.base_url = strdup(source.c_str());
+    } catch (const toml::parse_error &) {
+        r.error = strdup("根级字段 TOML 校验失败，未修改文件。");
+    } catch (const std::exception &e) {
+        r.error = strdup(e.what());
+    } catch (...) {
+        r.error = strdup("修改根级字段时发生未知错误，未修改文件。");
+    }
+    return r;
+}

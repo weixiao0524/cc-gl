@@ -14,6 +14,8 @@ CGLInspection cgl_inspect(const char *text, size_t length);
 CGLInspection cgl_permission(const char *text, size_t length, const char *key);
 CGLInspection cgl_mcp(const char *text, size_t length, size_t index);
 CGLInspection cgl_mcp_edit(const char *text, size_t length, const char *name, int enabled);
+CGLInspection cgl_root_get(const char *text, size_t length, const char *key);
+CGLInspection cgl_root_set(const char *text, size_t length, const char *key, const char *encoded_value);
 void cgl_free(CGLInspection result);
 #ifdef __cplusplus
 }

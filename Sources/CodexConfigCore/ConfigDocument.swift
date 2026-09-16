@@ -200,6 +200,31 @@ public struct MCPServer: Identifiable, Equatable {
     public let enabled: Bool
 }
 
+public struct RootChange: Codable, Equatable {
+    public let key: String
+    public let stringValue: String?
+    public let integerValue: Int64?
+    public let removed: Bool
+
+    public static func setString(_ key: String, _ value: String) -> RootChange {
+        RootChange(key: key, stringValue: value, integerValue: nil, removed: false)
+    }
+
+    public static func setInteger(_ key: String, _ value: Int64) -> RootChange {
+        RootChange(key: key, stringValue: nil, integerValue: value, removed: false)
+    }
+
+    public static func remove(_ key: String) -> RootChange {
+        RootChange(key: key, stringValue: nil, integerValue: nil, removed: true)
+    }
+}
+
+public struct ModelSettings: Equatable {
+    public var instructionsFile: String?
+    public var contextWindow: Int64?
+    public var autoCompactTokenLimit: Int64?
+}
+
 extension ConfigDocument {
     public func mcpServers() throws -> [MCPServer] {
         var servers: [MCPServer] = []
@@ -223,6 +248,184 @@ extension ConfigDocument {
         defer { cgl_free(result) }
         if let error = result.error { throw ConfigError(String(cString: error)) }
         guard let output = result.base_url else { throw ConfigError("MCP 修改失败。") }
+        return Data(String(cString: output).utf8)
+    }
+
+    public func modelSettings() throws -> ModelSettings {
+        ModelSettings(
+            instructionsFile: try optionalRootString("model_instructions_file"),
+            contextWindow: try optionalRootInteger("model_context_window"),
+            autoCompactTokenLimit: try optionalRootInteger("model_auto_compact_token_limit")
+        )
+    }
+
+    public func replacingRoots(_ edits: [RootChange]) throws -> Data {
+        var output = data
+        var inserts: [RootChange] = []
+        for edit in edits {
+            let current = try ConfigDocument(data: output)
+            if try current.matches(edit) { continue }
+            if !edit.removed, try current.isMissing(edit.key) {
+                inserts.append(edit)
+                continue
+            }
+            output = try current.applying(edit)
+            guard try ConfigDocument(data: output).matches(edit) else {
+                throw ConfigError("模型设置校验失败，未写入文件。")
+            }
+        }
+        for edit in inserts.reversed() {
+            output = try ConfigDocument(data: output).applying(edit)
+            guard try ConfigDocument(data: output).matches(edit) else {
+                throw ConfigError("模型设置校验失败，未写入文件。")
+            }
+        }
+        let settings = try ConfigDocument(data: output).modelSettings()
+        if let window = settings.contextWindow, let compact = settings.autoCompactTokenLimit {
+            try Self.validateAutoCompact(compact, window: window)
+        }
+        return output
+    }
+
+    public static func validateInstructionsPath(_ value: String) throws {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              !value.unicodeScalars.contains(where: {
+                  CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0)
+              }),
+              value.hasPrefix("/") else {
+            throw ConfigError("指令文件必须是绝对路径，不能包含空白或控制字符。")
+        }
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: value, isDirectory: &directory), !directory.boolValue else {
+            throw ConfigError("指令文件不存在或不是普通文件。")
+        }
+        let url = URL(fileURLWithPath: value)
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw ConfigError("指令文件必须是普通文件，不能是符号链接。")
+        }
+        if let size = values.fileSize, size > 1_000_000 {
+            throw ConfigError("指令文件不能超过 1 MB。")
+        }
+    }
+
+    public static func validateContextWindow(_ value: Int64) throws {
+        guard (8_000...2_000_000).contains(value) else {
+            throw ConfigError("上下文上限必须是 8000 到 2000000 之间的整数。")
+        }
+    }
+
+    public static func validateAutoCompact(_ value: Int64, window: Int64?) throws {
+        guard (1_000...2_000_000).contains(value) else {
+            throw ConfigError("自动压缩阈值必须是 1000 到 2000000 之间的整数。")
+        }
+        if let window, value >= window {
+            throw ConfigError("自动压缩阈值必须小于上下文上限。")
+        }
+    }
+
+    public static func defaultInstructionsText() -> String {
+        """
+        # Codex 模型指令
+
+        此文件会替换 Codex 内置的模型指令，不是项目里的 AGENTS.md。
+        官方不建议轻易覆盖，除非你明确知道影响。
+
+        请在下方编写指令内容。保存文件并重启 Codex 或相关会话后生效。
+
+        """
+    }
+
+    private func optionalRootString(_ key: String) throws -> String? {
+        switch try rootField(key) {
+        case .missing: return nil
+        case .string(let value): return value
+        case .integer: throw ConfigError("\(key) 必须是字符串路径。")
+        }
+    }
+
+    private func optionalRootInteger(_ key: String) throws -> Int64? {
+        switch try rootField(key) {
+        case .missing: return nil
+        case .integer(let value): return value
+        case .string: throw ConfigError("\(key) 必须是整数。")
+        }
+    }
+
+    private enum RootField {
+        case missing
+        case string(String)
+        case integer(Int64)
+    }
+
+    private func rootField(_ key: String) throws -> RootField {
+        let result = data.withUnsafeBytes {
+            cgl_root_get($0.bindMemory(to: CChar.self).baseAddress, data.count, key)
+        }
+        defer { cgl_free(result) }
+        if let error = result.error { throw ConfigError(String(cString: error)) }
+        guard let value = result.base_url else { return .missing }
+        let text = String(cString: value)
+        if result.start == 1 { return .string(text) }
+        if result.start == 2, let number = Int64(text) { return .integer(number) }
+        throw ConfigError("无法读取 \(key)。")
+    }
+
+    private func matches(_ edit: RootChange) throws -> Bool {
+        let current = try rootField(edit.key)
+        if edit.removed { return ifCaseMissing(current) }
+        if let value = edit.stringValue {
+            if case .string(let current) = current, current == value { return true }
+            return false
+        }
+        if let value = edit.integerValue {
+            if case .integer(let current) = current, current == value { return true }
+            return false
+        }
+        throw ConfigError("模型设置不完整。")
+    }
+
+    private func isMissing(_ key: String) throws -> Bool {
+        if case .missing = try rootField(key) { return true }
+        return false
+    }
+
+    private func ifCaseMissing(_ field: RootField) -> Bool {
+        if case .missing = field { return true }
+        return false
+    }
+
+    private func applying(_ edit: RootChange) throws -> Data {
+        if !edit.removed, let path = edit.stringValue { try Self.validateInstructionsPath(path) }
+        if !edit.removed, let window = edit.integerValue, edit.key == "model_context_window" {
+            try Self.validateContextWindow(window)
+        }
+        if !edit.removed, let compact = edit.integerValue, edit.key == "model_auto_compact_token_limit" {
+            try Self.validateAutoCompact(compact, window: nil)
+        }
+        let encoded: String?
+        if edit.removed {
+            encoded = nil
+        } else if let value = edit.stringValue {
+            encoded = String(data: try encodedString(value), encoding: .utf8)
+        } else if let value = edit.integerValue {
+            encoded = String(value)
+        } else {
+            throw ConfigError("模型设置不完整。")
+        }
+        let result: CGLInspection = data.withUnsafeBytes { bytes in
+            let base = bytes.bindMemory(to: CChar.self).baseAddress
+            return edit.key.withCString { key in
+                if let encoded {
+                    return encoded.withCString { cgl_root_set(base, data.count, key, $0) }
+                }
+                return cgl_root_set(base, data.count, key, nil)
+            }
+        }
+        defer { cgl_free(result) }
+        if let error = result.error { throw ConfigError(String(cString: error)) }
+        guard let output = result.base_url else { throw ConfigError("模型设置修改失败。") }
         return Data(String(cString: output).utf8)
     }
 }

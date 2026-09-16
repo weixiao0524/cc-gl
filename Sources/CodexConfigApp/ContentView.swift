@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showConfigurationInfo = false
     @State private var showCloudSync = false
     @State private var showMCP = false
+    @State private var showModelSettings = false
     @State private var search = ""
     @State private var visitedFields: Set<AppModel.DraftField> = []
     @FocusState private var focusedField: AppModel.DraftField?
@@ -302,7 +303,7 @@ struct ContentView: View {
                         Text("YOLO 为全局设置，切换即保存。开启后免审批、完全访问；关闭后使用工作区写入、按需审批。")
                         Text("重启 Codex 或新建会话后读取。命令行、项目配置或受托管策略可能覆盖此设置。")
                         Divider()
-                        Text("应用线路只更新地址和密钥，其他设置保持原样。支持恢复最近一次修改。")
+                        Text("模型设置可启用 model_instructions_file，并调整上下文上限。应用线路只更新地址和密钥。支持恢复最近一次修改。")
                         Text(model.isDemo ? "演示数据与真实配置完全隔离" : "目录：\(model.service.codexDirectory.path)")
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
@@ -311,8 +312,21 @@ struct ContentView: View {
                     .padding(18)
                     .frame(width: 310)
                 }
-
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Button { showModelSettings.toggle() } label: {
+                    Label("模型设置", systemImage: "text.book.closed")
+                }
+                .controlSize(.small)
+                .accessibilityIdentifier("model-settings")
+                .disabled(model.current == nil || model.needsRecovery)
+                .help("自定义模型指令与上下文上限")
+                .popover(isPresented: $showModelSettings, arrowEdge: .bottom) {
+                    ModelSettingsPanel(model: model, accent: accent) { showModelSettings = false }
+                        .frame(width: 400, height: 560)
+                }
                 Button { showMCP.toggle() } label: {
                     Label("MCP 管理", systemImage: "puzzlepiece.extension")
                 }
@@ -471,5 +485,240 @@ struct ContentView: View {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+struct ModelSettingsPanel: View {
+    @ObservedObject var model: AppModel
+    let accent: Color
+    var onClose: () -> Void
+    @State private var contextDraft = ""
+    @State private var compactDraft = ""
+
+    private var settings: ModelSettings? { try? model.current?.config.modelSettings() }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "text.book.closed")
+                    .foregroundStyle(accent)
+                    .frame(width: 32, height: 32)
+                    .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("模型设置").font(.system(size: 14, weight: .semibold))
+                    Text("指令文件与上下文上限").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(.primary.opacity(0.05), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭模型设置")
+            }
+            .padding(18)
+            Divider().padding(.horizontal, 18)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if model.current == nil {
+                        Text("请先成功读取 Codex 配置")
+                            .font(.caption).foregroundStyle(.secondary).padding(12)
+                    } else if settings == nil {
+                        Text("模型设置无法读取，请检查根级字段类型。")
+                            .font(.caption).foregroundStyle(.orange).padding(12)
+                    } else {
+                        instructionsSection
+                        Divider()
+                        contextSection
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18).padding(.vertical, 14)
+            }
+            Divider().padding(.horizontal, 18)
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
+                Text("切换即保存，重启 Codex 或相关会话后生效。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("应用上限") { applyContextDrafts() }
+                    .controlSize(.small)
+                    .disabled(model.needsRecovery || contextDraftError != nil || compactDraftError != nil || !contextDraftsChanged)
+                    .accessibilityIdentifier("model-context-apply")
+                    .help(contextDraftError ?? compactDraftError ?? "将窗口与压缩阈值写入本地配置")
+            }
+            .padding(.horizontal, 18).padding(.vertical, 14)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { syncContextDrafts() }
+        .onChange(of: model.current?.snapshot.config) { _ in syncContextDrafts() }
+    }
+
+    private var instructionsSection: some View {
+        let enabled = settings?.instructionsFile != nil
+        let path = settings?.instructionsFile
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("自定义模型指令").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Toggle("启用", isOn: Binding(
+                    get: { enabled },
+                    set: { value in
+                        if value { model.startInstructionsFile(open: false) }
+                        else { model.setInstructionsFile(nil) }
+                    }
+                ))
+                .labelsHidden().toggleStyle(.switch).controlSize(.small).fixedSize()
+                .disabled(model.needsRecovery)
+                .accessibilityIdentifier("model-instructions-toggle")
+            }
+            Text(enabled ? "已覆盖 Codex 内置指令" : "未启用，使用 Codex 内置指令")
+                .font(.system(size: 11))
+                .foregroundStyle(enabled ? accent : .secondary)
+            Text("此项替换内置模型指令，不是 AGENTS.md。官方不建议轻易覆盖。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(path ?? "默认文件：\(model.service.codexDirectory.appendingPathComponent("model_instructions.md").path)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .help(path ?? "")
+            HStack(spacing: 8) {
+                Button("启用并打开") { model.startInstructionsFile(open: true) }
+                    .accessibilityIdentifier("model-instructions-start")
+                Button("选择文件") { pickInstructionsFile() }
+                    .accessibilityIdentifier("model-instructions-pick")
+                Button("打开文件") { openInstructionsFile() }
+                    .disabled(path == nil)
+                    .accessibilityIdentifier("model-instructions-open")
+            }
+            .controlSize(.small)
+            .disabled(model.needsRecovery)
+        }
+    }
+
+    private var contextSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("上下文上限").font(.system(size: 13, weight: .semibold))
+            Text(contextSummary)
+                .font(.system(size: 11))
+                .foregroundStyle(settings?.contextWindow != nil ? accent : .secondary)
+            Text("写入 config.toml 的 model_context_window 与 model_auto_compact_token_limit。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                ForEach(Self.presets, id: \.title) { preset in
+                    Button(preset.title) {
+                        contextDraft = preset.window.map(String.init) ?? ""
+                        compactDraft = preset.compact.map(String.init) ?? ""
+                        model.setContextLimits(window: preset.window, compact: preset.compact)
+                    }
+                    .accessibilityIdentifier("model-context-\(preset.title)")
+                }
+            }
+            .controlSize(.small)
+            .disabled(model.needsRecovery)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("窗口 tokens").font(.system(size: 12, weight: .medium))
+                TextField("例如 272000", text: $contextDraft)
+                    .font(.system(size: 13, design: .monospaced))
+                    .accessibilityIdentifier("model-context-window")
+                Text("留空表示使用 Codex 默认值").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("自动压缩 tokens").font(.system(size: 12, weight: .medium))
+                TextField("例如 240000", text: $compactDraft)
+                    .font(.system(size: 13, design: .monospaced))
+                    .accessibilityIdentifier("model-context-compact")
+                Text("建议小于窗口；留空则删除该字段").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            if let error = contextDraftError ?? compactDraftError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.system(size: 11)).foregroundStyle(.red)
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+    }
+
+    private static let presets: [(title: String, window: Int64?, compact: Int64?)] = [
+        ("默认", nil, nil),
+        ("128K", 128_000, 64_000),
+        ("272K", 272_000, 240_000),
+        ("1M", 1_000_000, 900_000)
+    ]
+
+    private var parsedWindow: Int64? {
+        let text = contextDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return Int64(text)
+    }
+
+    private var parsedCompact: Int64? {
+        let text = compactDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return Int64(text)
+    }
+
+    private var contextDraftError: String? {
+        let text = contextDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return nil }
+        guard let value = Int64(text) else { return "上下文上限必须是整数。" }
+        do { try ConfigDocument.validateContextWindow(value); return nil }
+        catch { return (error as? ConfigError)?.message ?? "上下文上限无效。" }
+    }
+
+    private var compactDraftError: String? {
+        let text = compactDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return nil }
+        guard let value = Int64(text) else { return "自动压缩阈值必须是整数。" }
+        do { try ConfigDocument.validateAutoCompact(value, window: parsedWindow); return nil }
+        catch { return (error as? ConfigError)?.message ?? "自动压缩阈值无效。" }
+    }
+
+    private var contextDraftsChanged: Bool {
+        settings?.contextWindow != parsedWindow || settings?.autoCompactTokenLimit != parsedCompact
+    }
+
+    private var contextSummary: String {
+        switch (settings?.contextWindow, settings?.autoCompactTokenLimit) {
+        case (nil, nil): return "当前使用 Codex 默认窗口"
+        case let (window?, compact?): return "当前窗口 \(window)，自动压缩 \(compact)"
+        case let (window?, nil): return "当前窗口 \(window)"
+        case let (nil, compact?): return "当前自动压缩 \(compact)"
+        }
+    }
+
+    private func syncContextDrafts() {
+        contextDraft = settings?.contextWindow.map(String.init) ?? ""
+        compactDraft = settings?.autoCompactTokenLimit.map(String.init) ?? ""
+    }
+
+    private func applyContextDrafts() {
+        guard contextDraftError == nil, compactDraftError == nil else { return }
+        model.setContextLimits(window: parsedWindow, compact: parsedCompact)
+    }
+
+    private func pickInstructionsFile() {
+        let panel = NSOpenPanel()
+        panel.message = "选择模型指令文件"
+        panel.prompt = "使用此文件"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = model.service.codexDirectory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setInstructionsFile(url.standardizedFileURL.path)
+    }
+
+    private func openInstructionsFile() {
+        guard let path = settings?.instructionsFile else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 }

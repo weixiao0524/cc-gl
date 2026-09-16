@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import CodexConfigCore
 
 // Demo mode has isolated files and in-memory secrets; it never reads ~/.codex or Keychain.
@@ -269,6 +270,84 @@ final class AppModel: ObservableObject {
             statusIsError = false
         } catch { report(error) }
         updateBackup()
+    }
+
+    func setInstructionsFile(_ path: String?) {
+        guard let current else { return }
+        do {
+            let change: RootChange
+            if let path {
+                let resolved = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+                try ConfigDocument.validateInstructionsPath(resolved)
+                change = .setString("model_instructions_file", resolved)
+            } else {
+                change = .remove("model_instructions_file")
+            }
+            try service.setRoots([change], expected: current.snapshot)
+            self.current = try service.load()
+            status = path == nil
+                ? "已关闭自定义模型指令。请重启 Codex 或相关会话"
+                : "已启用自定义模型指令。请重启 Codex 或相关会话"
+            statusIsError = false
+        } catch { report(error) }
+        updateBackup()
+    }
+
+    func startInstructionsFile(open: Bool = true) {
+        guard let current else { return }
+        do {
+            let existing = try current.config.modelSettings().instructionsFile
+            let url = existing.map { URL(fileURLWithPath: $0) }
+                ?? service.codexDirectory.appendingPathComponent("model_instructions.md")
+            if existing == nil, !FileManager.default.fileExists(atPath: url.path) {
+                guard let data = ConfigDocument.defaultInstructionsText().data(using: .utf8) else {
+                    throw ConfigError("无法创建模型指令文件。")
+                }
+                try data.write(to: url, options: .withoutOverwriting)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+            try ConfigDocument.validateInstructionsPath(url.path)
+            try service.setRoots([.setString("model_instructions_file", url.path)], expected: current.snapshot)
+            self.current = try service.load()
+            if open { NSWorkspace.shared.open(url) }
+            status = open
+                ? "已启用模型指令并打开文件。请编辑保存后重启 Codex 或相关会话"
+                : "已启用自定义模型指令。请重启 Codex 或相关会话"
+            statusIsError = false
+        } catch { report(error) }
+        updateBackup()
+    }
+
+    func setContextLimits(window: Int64?, compact: Int64?) {
+        guard let current else { return }
+        do {
+            if let window { try ConfigDocument.validateContextWindow(window) }
+            if let compact { try ConfigDocument.validateAutoCompact(compact, window: window) }
+            let edits = [
+                window.map { RootChange.setInteger("model_context_window", $0) }
+                    ?? RootChange.remove("model_context_window"),
+                compact.map { RootChange.setInteger("model_auto_compact_token_limit", $0) }
+                    ?? RootChange.remove("model_auto_compact_token_limit")
+            ]
+            try service.setRoots(edits, expected: current.snapshot)
+            self.current = try service.load()
+            status = Self.contextStatus(window: window, compact: compact)
+            statusIsError = false
+        } catch { report(error) }
+        updateBackup()
+    }
+
+    private static func contextStatus(window: Int64?, compact: Int64?) -> String {
+        switch (window, compact) {
+        case (nil, nil):
+            return "已恢复默认上下文上限。请重启 Codex 或相关会话"
+        case let (window?, compact?):
+            return "已设置上下文上限 \(window)，自动压缩 \(compact)。请重启 Codex 或相关会话"
+        case let (window?, nil):
+            return "已设置上下文上限 \(window)。请重启 Codex 或相关会话"
+        case let (nil, compact?):
+            return "已设置自动压缩阈值 \(compact)。请重启 Codex 或相关会话"
+        }
     }
 
     func restore() {
