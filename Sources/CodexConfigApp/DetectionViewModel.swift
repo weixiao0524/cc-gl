@@ -1,5 +1,8 @@
 import SwiftUI
+import os
 import CodexConfigCore
+
+private let detectionLog = Logger(subsystem: "CodexConfig", category: "detection")
 
 @MainActor
 final class DetectionViewModel: ObservableObject, Identifiable {
@@ -10,7 +13,8 @@ final class DetectionViewModel: ObservableObject, Identifiable {
     let isDemo: Bool
     private let apiKey: String
     private let client: MeowDetecting
-    @Published var candidate: DetectionCandidate = .astra
+    // nil until the model list has been synced from the site's bootstrap.
+    @Published var candidate: DetectionCandidate?
     @Published var consent = false
     @Published var phase: Phase = .connecting
     @Published var bootstrap: DetectionBootstrap?
@@ -22,7 +26,9 @@ final class DetectionViewModel: ObservableObject, Identifiable {
     private var runID: String?
     private var work: Task<Void, Never>?
 
-    var plan: DetectionPlan? { try? bootstrap?.plan(for: candidate) }
+    /// Picker options, always the live list from the last successful bootstrap.
+    var candidates: [DetectionCandidate] { bootstrap?.candidates ?? [] }
+    var plan: DetectionPlan? { candidate.flatMap { try? bootstrap?.plan(for: $0) } }
     var canStart: Bool { [.ready, .finished, .failed].contains(phase) && plan != nil && consent }
     var remoteMayBeActive: Bool { [.submitting, .running, .paused, .stopping, .uncertain].contains(phase) }
     var hasKnownActiveRun: Bool { runID != nil && [.running, .paused, .stopping].contains(phase) }
@@ -30,7 +36,7 @@ final class DetectionViewModel: ObservableObject, Identifiable {
     var isWorking: Bool { [.connecting, .submitting, .running, .stopping].contains(phase) }
     var scene: InvestigationScene { InvestigationScene(phase: phase, report: report) }
     var hasCompletedReport: Bool { report?.isTerminal == true }
-    var reportCandidate: DetectionCandidate { testedCandidate ?? candidate }
+    var reportCandidate: DetectionCandidate? { testedCandidate ?? candidate }
 
     init(baseURL: String, apiKey: String, profileName: String, isDemo: Bool) {
         self.baseURL = baseURL; self.apiKey = apiKey; self.profileName = profileName; self.isDemo = isDemo
@@ -47,11 +53,28 @@ final class DetectionViewModel: ObservableObject, Identifiable {
         work = Task { [weak self] in
             guard let self else { return }
             do {
-                self.bootstrap = try await self.client.prepare()
-                _ = try self.bootstrap?.plan(for: self.candidate)
+                let bootstrap = try await self.client.prepare()
+                self.bootstrap = bootstrap
+                let synced = bootstrap.candidates
+                detectionLog.info("Synced detection models: \(synced.map(\.rawValue).joined(separator: ","), privacy: .public)")
+                // Keep the user's choice if the site still offers it (re-bound to the synced entry so
+                // the Picker tag matches); otherwise fall back to the first remote model so a retired
+                // id (e.g. gpt-5.6-sol) is never submitted.
+                let previous = self.candidate
+                self.candidate = synced.first { $0.rawValue == previous?.rawValue } ?? synced.first
+                if let previous, self.candidate?.rawValue != previous.rawValue {
+                    detectionLog.notice("Selected model \(previous.rawValue, privacy: .public) no longer offered; reset")
+                }
+                guard let candidate = self.candidate else {
+                    // Clear bootstrap so the "重新连接" action is offered.
+                    self.bootstrap = nil
+                    throw DetectionError.message("网站当前没有可检测的 GPT 模型，暂时无法检测。")
+                }
+                _ = try bootstrap.plan(for: candidate)
                 self.phase = .ready
                 self.message = self.isDemo ? "演示模式：模拟检测，不联网、不计费。" : "已连接 meowllm.top；尚未提交地址或 API Key。"
             } catch {
+                detectionLog.error("Detection bootstrap failed")
                 self.phase = .failed
                 self.message = self.describe(error)
             }
@@ -59,7 +82,7 @@ final class DetectionViewModel: ObservableObject, Identifiable {
     }
 
     func confirmStart() {
-        guard canStart, let plan else { return }
+        guard canStart, let plan, let candidate else { return }
         let input = DetectionInput(baseURL: baseURL, apiKey: apiKey, candidate: candidate, publicConsent: consent)
         do { try input.validate() }
         catch { message = describe(error); return }
@@ -163,17 +186,25 @@ enum DemonstrationOutcome: String, CaseIterable, Identifiable {
 
 // Deterministic, fake reports for native UI verification; this actor never creates a URLSession.
 private actor DemoDetectionClient: MeowDetecting {
-    private var candidate = DetectionCandidate.astra
+    private var candidate: DetectionCandidate?
+    private var candidates: [DetectionCandidate] = []
     private var progress = 0
     private var stopped = false
     private var outcome: DemonstrationOutcome = .match
     private var failuresLeft = 3
     func setOutcome(_ value: DemonstrationOutcome) { outcome = value }
+    // Mirrors the live bootstrap shape, including the reference-only "other" bucket.
     func prepare() async throws -> DetectionBootstrap {
-        try JSONDecoder().decode(DetectionBootstrap.self, from: Data("""
+        let bootstrap = try JSONDecoder().decode(DetectionBootstrap.self, from: Data("""
         {"csrf":"demo-only","public_site":true,"benchmarks":[{"id":"demo","version":"demo","mode":"gpt",
-        "models":[{"id":"gpt-6-astra","name":"gpt-6-astra"},{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"}],"tiers":{"low":20}}]}
+        "models":[{"id":"gpt-6-astra","name":"gpt-6-astra","reference_only":false},
+        {"id":"gpt-6-sol","name":"gpt-6-sol","reference_only":false},
+        {"id":"gpt-5.6-terra","name":"gpt-5.6-terra","reference_only":false},
+        {"id":"gpt-6-luna","name":"gpt-6-luna","reference_only":false},
+        {"id":"other_known_external","name":"other","reference_only":true}],"tiers":{"low":20}}]}
         """.utf8))
+        candidates = bootstrap.candidates
+        return bootstrap
     }
     func start(_ input: DetectionInput, reviewedPlan: DetectionPlan) async throws -> String {
         try input.validate()
@@ -190,15 +221,16 @@ private actor DemoDetectionClient: MeowDetecting {
         }
         if !stopped { progress = min(20, progress + 2) }
         let status = stopped ? "cancelled" : progress == 20 ? (outcome == .failed ? "error" : "complete") : "running"
-        let strongest = outcome == .mismatch ? (candidate == .astra ? DetectionCandidate.sol : .astra) : candidate
-        let scores: [String: Double] = [DetectionCandidate.astra.rawValue: strongest == .astra ? 0.94 : 0.03,
-                                        DetectionCandidate.sol.rawValue: strongest == .sol ? 0.94 : 0.03,
-                                        "other_known_external": 0.03]
+        let claimed = candidate?.rawValue ?? ""
+        // A mismatch points at the first other synced model; every other bucket gets a low score.
+        let strongest = outcome == .mismatch ? (candidates.first { $0.rawValue != claimed }?.rawValue ?? "other_known_external") : claimed
+        var scores = Dictionary(uniqueKeysWithValues: (candidates.map(\.rawValue) + ["other_known_external"]).map { ($0, 0.03) })
+        scores[strongest] = 0.94
         let object: [String: Any] = ["id": id, "status": status, "planned": 20, "completed": progress,
             "valid": outcome == .noEvidence ? 0 : progress, "attempts": progress, "retries_used": 0, "can_stop": status == "running",
-            "fingerprint": ["color": outcome == .mismatch ? "red" : "green", "model": strongest.rawValue,
+            "fingerprint": ["color": outcome == .mismatch ? "red" : "green", "model": strongest,
                 "quality_status": outcome == .inconclusive ? "cell_samples_incomplete" : "sufficient",
-                "partial": outcome == .inconclusive, "matches": scores, "thresholds": [candidate.rawValue: 0.87]]]
+                "partial": outcome == .inconclusive, "matches": scores, "thresholds": [claimed: 0.87]]]
         return try JSONDecoder().decode(DetectionReport.self, from: JSONSerialization.data(withJSONObject: object))
     }
     func stop(id: String) async throws { stopped = true }

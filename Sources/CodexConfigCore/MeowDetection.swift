@@ -1,14 +1,36 @@
 import Foundation
 
-public enum DetectionCandidate: String, CaseIterable, Identifiable, Sendable {
-    case astra = "gpt-6-astra"
-    case sol = "gpt-5.6-sol"
+/// A model the detection site can currently be asked to check. The list is no longer hard-coded:
+/// it is synced from the site's `/api/bootstrap` GPT benchmark every time the panel connects.
+/// `rawValue` is both the claimed model and the `model` sent to the user's own endpoint.
+public struct DetectionCandidate: Hashable, Identifiable, Sendable {
+    public let rawValue: String
+    public let name: String
     public var id: String { rawValue }
+
+    public init(_ rawValue: String, name: String? = nil) {
+        self.rawValue = rawValue
+        self.name = name ?? rawValue
+    }
+
+    /// Model ids come from a third-party server and are shown in the UI and sent upstream, so only a
+    /// conservative identifier alphabet is accepted (letters, digits, `.`, `-`, `_`, at most 100 bytes).
+    static func isSafeIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 100 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 46 || $0 == 95
+        }
+    }
 }
 
 public struct DetectionBootstrap: Decodable, Sendable {
     public struct Benchmark: Decodable, Sendable {
-        public struct Model: Decodable, Sendable { public let id: String; public let name: String }
+        public struct Model: Decodable, Sendable {
+            public let id: String
+            public let name: String
+            // Optional so older bootstrap payloads without these fields still decode.
+            public let request_model: String?
+            public let reference_only: Bool?
+        }
         public let id: String
         public let version: String
         public let mode: String
@@ -19,10 +41,39 @@ public struct DetectionBootstrap: Decodable, Sendable {
     public let benchmarks: [Benchmark]
     public let public_site: Bool
 
+    /// The single benchmark this client submits against (`mode=gpt`, low tier).
+    public var gptBenchmark: Benchmark? { benchmarks.first(where: { $0.mode == "gpt" }) }
+
+    /// Selectable models in server order. Reference-only entries (e.g. `other_known_external`) are
+    /// comparison buckets in the fingerprint, not real models, so they are excluded; unsafe or
+    /// duplicate ids are dropped rather than echoed into the UI or a paid request.
+    public var candidates: [DetectionCandidate] {
+        var seen = Set<String>()
+        return (gptBenchmark?.models ?? []).compactMap { model in
+            guard model.reference_only != true, DetectionCandidate.isSafeIdentifier(model.id),
+                  seen.insert(model.id).inserted else { return nil }
+            let name = DetectionCandidate.isSafeIdentifier(model.name) ? model.name : model.id
+            return DetectionCandidate(model.id, name: name)
+        }
+    }
+
+    /// Ids that may appear as fingerprint match keys (including reference-only buckets).
+    public var fingerprintModelIDs: [String] {
+        (gptBenchmark?.models ?? []).map(\.id).filter(DetectionCandidate.isSafeIdentifier)
+    }
+
+    /// Display label for a fingerprint match key; unknown keys are never shown by the caller.
+    public func displayName(for id: String) -> String {
+        if id == "other_known_external" { return "其他候选" }
+        guard let model = gptBenchmark?.models.first(where: { $0.id == id }),
+              DetectionCandidate.isSafeIdentifier(model.name) else { return id }
+        return model.name
+    }
+
     public func plan(for candidate: DetectionCandidate) throws -> DetectionPlan {
         guard !csrf.isEmpty, public_site,
-              let benchmark = benchmarks.first(where: { $0.mode == "gpt" }),
-              benchmark.models.contains(where: { $0.id == candidate.rawValue }),
+              let benchmark = gptBenchmark,
+              candidates.contains(where: { $0.rawValue == candidate.rawValue }),
               let count = benchmark.tiers["low"], (1...120).contains(count) else {
             throw DetectionError.message("网站当前基准不支持所选模型或低档，未发起检测。")
         }

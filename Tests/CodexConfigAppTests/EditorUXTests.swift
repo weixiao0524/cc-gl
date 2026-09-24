@@ -171,15 +171,28 @@ final class EditorUXTests: XCTestCase {
     func testCompletedReportStaysBoundToTestedCandidate() throws {
         let model = DetectionViewModel(baseURL: "https://example.com/v1", apiKey: "demo-key", profileName: "Demo", isDemo: true)
         XCTAssertFalse(model.hasCompletedReport)
-        model.testedCandidate = .astra
+        model.testedCandidate = DetectionCandidate("gpt-6-astra")
         model.report = try JSONDecoder().decode(DetectionReport.self, from: Data("""
         {"id":"demo","status":"complete","planned":20,"completed":20,"valid":18,"attempts":20}
         """.utf8))
         model.phase = .finished
-        model.candidate = .sol
+        model.candidate = DetectionCandidate("gpt-6-sol")
         XCTAssertTrue(model.hasCompletedReport)
-        XCTAssertEqual(model.reportCandidate, .astra)
+        XCTAssertEqual(model.reportCandidate?.rawValue, "gpt-6-astra")
         XCTAssertEqual(model.report?.valid, 18)
+    }
+
+    @MainActor
+    func testDetectionPickerSyncsRemoteModelsAndDropsRetiredSelection() async throws {
+        let model = DetectionViewModel(baseURL: "https://example.com/v1", apiKey: "demo-key", profileName: "Demo", isDemo: true)
+        XCTAssertTrue(model.candidates.isEmpty)
+        model.candidate = DetectionCandidate("gpt-5.6-sol")  // retired id from an older bootstrap
+        model.connect()
+        for _ in 0..<100 where model.phase == .connecting { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(model.candidates.map(\.rawValue), ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna"])
+        XCTAssertEqual(model.candidate?.rawValue, "gpt-6-astra")
+        XCTAssertNotNil(model.plan)
     }
 
     @MainActor

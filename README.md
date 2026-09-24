@@ -47,7 +47,7 @@ open dist/CodexConfig.app
 ./scripts/build-app.sh --dmg
 ```
 
-构建结果位于 `dist/`，默认仅包含当前机器架构。可将 `CodexConfig.app` 拖入「应用程序」。默认使用本地 ad-hoc 签名，尚未进行 Developer ID 公证。
+构建结果位于 `dist/`，默认仅包含当前机器架构。可将 `CodexConfig.app` 拖入「应用程序」。未设置 `SIGN_IDENTITY` 时，自动使用本机的 Developer ID 或 Apple Development 证书，找不到证书才回退到 ad-hoc 签名，尚未进行 Developer ID 公证。证书签名可以让钥匙串的「始终允许」在更新后继续有效；所有密钥存放在一个钥匙串条目中，最多只需输入一次密码。
 
 ### 使用方法
 

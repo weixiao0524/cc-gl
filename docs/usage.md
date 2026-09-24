@@ -72,8 +72,8 @@ open -n dist/CodexConfig.app --args --demo --demo-dark --demo-reduce-motion --de
 ![模型检测面板（仅为模拟结果）](../Resources/detection-preview.png)
 
 1. 选择当前文件或任意收藏，在编辑区点击 **模型检测**。使用当前编辑区的地址与密钥，不要求先应用或保存。
-2. 下拉框仅有 **gpt-6-astra**、**gpt-5.6-sol** 两个检测对象；实际请求的 `model` 使用同名值。
-3. 固定网站的 **低档 `tier=low`**，不是修改模型的 `reasoning_effort`。从网站读取实际样本数量；当前为 20 次计划请求、10 次重试预算、最多 30 次，3 并发。
+2. 下拉框的检测对象在每次打开面板时从网站 `/api/bootstrap` 的 GPT 基准实时同步（撰写时为 **gpt-6-astra**、**gpt-6-sol**、**gpt-5.6-terra**、**gpt-6-luna**），不含仅作对照的 `other`；网站下架的模型会自动切换为列表第一项。实际请求的 `model` 使用同名值。
+3. 固定网站的 **低档 `tier=low`**，不是修改模型的 `reasoning_effort`。从网站读取实际样本数量；重试预算为计划请求数的一半（向上取整），3 并发；具体次数以面板显示的网站实时值为准。
 4. 阅读数据和费用说明，勾选同意后点击 **开始查案**，确认才发送 Key。不会改动 Codex 的 `model`、`base_url`、认证文件或其他配置。
 5. 面板显示进度、有效样本、匹配度和结果，支持停止任务和断网后继续查询同一报告。
 
@@ -166,7 +166,7 @@ MEOW_LIVE_SMOKE=1 swift test --filter DetectionTests/testOptInLiveSessionWithout
 | 收藏名称、地址、密钥引用及同步版本 | `profiles.json`，不含密钥 |
 | iCloud 文件夹书签与解锁密钥引用 | `cloud-sync.json`，不含密钥 |
 | 待提交同步操作 | `sync-state-*.json.pending`，加密保存 |
-| 收藏密钥 | macOS 钥匙串，服务名 `local.cc-gl.CodexConfig.profiles`，仅本机使用 |
+| 收藏密钥 | macOS 钥匙串中的**单个**条目（服务名 `local.cc-gl.CodexConfig.vault`），所有收藏与同步密钥一起保存，仅本机使用；输入一次密码即全部解锁 |
 | 最近一次切换的前后文件快照 | `last-change.json` |
 | 管理器写入互斥锁 | `write.lock` |
 
@@ -199,7 +199,14 @@ open -n dist/CodexConfig.app --args --demo
 
 ### 签名
 
-默认使用本地 ad-hoc 签名，适合本机使用，**没有 Developer ID 公证**。跨机器公开分发需要 Apple Developer ID 签名和公证；不能宣称下载后一定无系统提示。重建 ad-hoc 应用后钥匙串可能重新请求访问。
+未设置 `SIGN_IDENTITY` 时，脚本会自动选用本机的 `Developer ID Application` 证书，其次是 `Apple Development` 证书；都没有时才回退到 ad-hoc 签名并给出警告。**没有 Developer ID 公证**，跨机器公开分发需要 Developer ID 签名和公证，不能宣称下载后一定无系统提示。
+
+钥匙串按应用的签名身份授权：
+- 证书签名的身份跨版本不变，在弹窗中选择 **「始终允许」** 后，之后的更新不再询问；
+- ad-hoc 签名每次构建都会变，每次更新后会询问一次；
+- 所有密钥集中在一个钥匙串条目中，任何情况下每次最多只需输入一次密码。
+
+从旧版本（每个收藏一个钥匙串条目）升级时，首次读取会把旧条目迁移到新的密钥库并删除旧条目。旧条目按条目授权，迁移时每个旧条目会**最后询问一次**，之后不再询问。
 
 ```bash
 SIGN_IDENTITY='Developer ID Application: ...' ./scripts/build-app.sh --dmg

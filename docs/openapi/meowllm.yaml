@@ -14,7 +14,10 @@ paths:
       summary: Establish in-memory owner cookie and receive CSRF token / benchmark tiers
       responses:
         '200':
-          description: csrf, instance, benchmarks, public_site, version, history_limit; sets __Host-meow_owner
+          description: >-
+            csrf, instance, benchmarks, public_site, version, history_limit; sets __Host-meow_owner.
+            Each benchmark has id, version, mode, key, name, tiers and models[{id, name, request_model, reference_only}].
+            The desktop client syncs its model picker from benchmarks[mode=gpt].models where reference_only != true.
   /api/runs:
     post:
       summary: Create a publicly visible paid detection run (never auto-retry)
@@ -32,7 +35,7 @@ paths:
               required: [mode, claimed_model, request_model, base_url, key, tier, workers, retry_budget, public_report]
               properties:
                 mode: {const: gpt}
-                claimed_model: {enum: [gpt-6-astra, gpt-5.6-sol]}
+                claimed_model: {type: string, description: 'Synced id from bootstrap benchmarks[mode=gpt].models (reference_only excluded)'}
                 request_model: {type: string}
                 base_url: {type: string, format: uri}
                 key: {type: string, writeOnly: true, minLength: 8, maxLength: 4096}
@@ -84,7 +87,7 @@ x-discovery-notes:
     - https://meowllm.top/app.js
     - https://meowllm.top/api/bootstrap
   session: 'Ephemeral owner cookie + X-Meow-Token; desktop sends matching Origin and Referer; redirects rejected.'
-  cost: 'GPT low tier currently 20 requests; default retry budget ceil(20/2)=10, maximum 30 attempts. Low means detector sample tier, not model reasoning_effort.'
+  cost: 'GPT low tier read live from bootstrap (32 requests as of 2026-09-24); retry budget ceil(low/2). Low means detector sample tier, not model reasoning_effort.'
   privacy: 'Key passes through meowllm.top and its Cloudflare proxy; endpoint and report publicly visible; website claims not to retain keys long-term.'
   limits: 'Frontend mentions 2 second minimum before submit, 30 second HTTP timeout, 15 minute run lifetime, max 8 runs per visitor.'
   verification: 'Public metadata and owner session verified live using native URLSession. Empty POST /api/runs returned 400 with error.code, without id. Valid creation and cancellation tested against mocks only; no key submitted or paid run created.'

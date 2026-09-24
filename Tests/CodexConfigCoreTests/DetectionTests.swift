@@ -18,26 +18,58 @@ private actor MockDetectionTransport: DetectionTransport {
     func captured() -> [URLRequest] { requests }
 }
 
+private extension DetectionCandidate {
+    static let astra = DetectionCandidate("gpt-6-astra")
+    static let sol = DetectionCandidate("gpt-6-sol")
+}
+
 final class DetectionTests: XCTestCase {
+    // Mirrors the live /api/bootstrap shape (2026-09-24), including the reference-only "other" bucket
+    // and a non-gpt benchmark that must be ignored.
     private let bootstrapJSON = """
     {"csrf":"test-csrf-token","public_site":true,"benchmarks":[{"id":"test","version":"1","mode":"gpt",
-    "models":[{"id":"gpt-6-astra","name":"gpt-6-astra"},{"id":"gpt-5.6-sol","name":"gpt-5.6-sol"}],
-    "tiers":{"low":20,"medium":40,"high":60}}]}
+    "models":[{"id":"gpt-6-astra","name":"gpt-6-astra","request_model":"openai/gpt-6-astra","reference_only":false},
+    {"id":"gpt-6-sol","name":"gpt-6-sol","request_model":"openai/gpt-6-sol","reference_only":false},
+    {"id":"gpt-5.6-terra","name":"gpt-5.6-terra","request_model":"openai/gpt-5.6-terra","reference_only":false},
+    {"id":"gpt-6-luna","name":"gpt-6-luna","request_model":"openai/gpt-6-luna","reference_only":false},
+    {"id":"other_known_external","name":"other","request_model":"reference-only:other","reference_only":true}],
+    "tiers":{"low":20,"medium":40,"high":60}},
+    {"id":"claude","version":"1","mode":"claude","models":[{"id":"claude-sonnet-5","name":"claude-sonnet-5"}],"tiers":{"low":48}}]}
     """
     private func input(_ candidate: DetectionCandidate = .astra, consent: Bool = true,
                        url: String = "https://api.example.com/v1", key: String = "dummy-test-key") -> DetectionInput {
         DetectionInput(baseURL: url, apiKey: key, candidate: candidate, publicConsent: consent)
     }
 
-    func testExactlyTwoCandidatesAndLowPlan() throws {
-        XCTAssertEqual(DetectionCandidate.allCases.map(\.rawValue), ["gpt-6-astra", "gpt-5.6-sol"])
+    func testCandidatesSyncFromBootstrapAndLowPlan() throws {
         let bootstrap = try JSONDecoder().decode(DetectionBootstrap.self, from: Data(bootstrapJSON.utf8))
-        for model in DetectionCandidate.allCases {
+        XCTAssertEqual(bootstrap.candidates.map(\.rawValue), ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna"])
+        XCTAssertThrowsError(try bootstrap.plan(for: DetectionCandidate("other_known_external")))
+        XCTAssertThrowsError(try bootstrap.plan(for: DetectionCandidate("gpt-5.6-sol")))
+        XCTAssertThrowsError(try bootstrap.plan(for: DetectionCandidate("claude-sonnet-5")))
+        XCTAssertEqual(bootstrap.displayName(for: "other_known_external"), "其他候选")
+        XCTAssertEqual(bootstrap.fingerprintModelIDs.last, "other_known_external")
+        for model in bootstrap.candidates {
             let plan = try bootstrap.plan(for: model)
             XCTAssertEqual(plan.requests, 20)
             XCTAssertEqual(plan.retries, 10)
             XCTAssertEqual(plan.maximum, 30)
         }
+    }
+
+    func testUnsafeDuplicateAndLegacyModelEntries() throws {
+        let json = """
+        {"csrf":"t","public_site":true,"benchmarks":[{"id":"b","version":"1","mode":"gpt","models":[
+        {"id":"gpt-6-astra","name":"gpt-6-astra"},{"id":"gpt-6-astra","name":"dup"},
+        {"id":"bad id/../x","name":"bad"},{"id":"","name":"empty"},{"id":"gpt-6-luna","name":"<b>luna</b>"}],
+        "tiers":{"low":20}}]}
+        """
+        // Legacy payload without request_model/reference_only still decodes; unsafe/duplicate ids are dropped
+        // and an unsafe display name falls back to the id.
+        let bootstrap = try JSONDecoder().decode(DetectionBootstrap.self, from: Data(json.utf8))
+        XCTAssertEqual(bootstrap.candidates.map(\.rawValue), ["gpt-6-astra", "gpt-6-luna"])
+        XCTAssertEqual(bootstrap.candidates.map(\.name), ["gpt-6-astra", "gpt-6-luna"])
+        XCTAssertThrowsError(try bootstrap.plan(for: DetectionCandidate("bad id/../x")))
     }
 
     func testLiveMetadataChangesFailClosed() throws {
@@ -78,8 +110,8 @@ final class DetectionTests: XCTestCase {
         XCTAssertEqual(post.value(forHTTPHeaderField: "Origin"), "https://meowllm.top")
         XCTAssertEqual(post.value(forHTTPHeaderField: "X-Meow-Token"), "test-csrf-token")
         let payload = try JSONSerialization.jsonObject(with: XCTUnwrap(post.httpBody)) as! [String: Any]
-        XCTAssertEqual(payload["claimed_model"] as? String, "gpt-5.6-sol")
-        XCTAssertEqual(payload["request_model"] as? String, "gpt-5.6-sol")
+        XCTAssertEqual(payload["claimed_model"] as? String, "gpt-6-sol")
+        XCTAssertEqual(payload["request_model"] as? String, "gpt-6-sol")
         XCTAssertEqual(payload["tier"] as? String, "low")
         XCTAssertEqual(payload["workers"] as? Int, 3)
         XCTAssertEqual(payload["retry_budget"] as? Int, 10)

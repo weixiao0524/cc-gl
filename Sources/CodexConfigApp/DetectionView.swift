@@ -71,7 +71,7 @@ struct DetectionView: View {
             Button("再想想", role: .cancel) {}
             Button(model.isDemo ? "开始演练" : "确认，开始检查") { model.confirmStart() }
         } message: {
-            Text("检查模型：\(model.candidate.rawValue)\n接口地址：\(model.baseURL)\n\n" +
+            Text("检查模型：\(model.candidate?.rawValue ?? "—")\n接口地址：\(model.baseURL)\n\n" +
                  (model.isDemo ? "仅播放模拟查案过程，不联网、不收费，也不修改配置。" :
                     "检测由 meowllm.top 执行，需要向它提交此接口的 API Key。地址和结果会公开。低档最多发起 \(model.plan?.maximum ?? 0) 次 API 请求，费用从对应 API 账户扣除。\n\n本工具不会修改 Codex 配置。"))
         }
@@ -115,7 +115,7 @@ struct DetectionView: View {
     private var resultSummary: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("检测结果").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-            LabeledContent("检测对象", value: model.reportCandidate.rawValue)
+            LabeledContent("检测对象", value: model.reportCandidate?.rawValue ?? "—")
                 .font(.system(size: 13, design: .monospaced))
             Text(model.baseURL).font(.system(size: 12)).foregroundStyle(.secondary)
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -170,11 +170,16 @@ struct DetectionView: View {
                 Text(model.hasCompletedReport ? "再次检测" : "检测对象").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if model.remoteMayBeActive {
-                    Text((model.testedCandidate ?? model.candidate).rawValue)
+                    Text(model.reportCandidate?.rawValue ?? "—")
                         .font(.system(size: 13, design: .monospaced))
+                } else if model.candidates.isEmpty {
+                    // Options come from the site's bootstrap; nothing is selectable until it syncs.
+                    Text(model.phase == .connecting ? "正在同步模型列表…" : "暂无可检测模型")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("detection-model")
                 } else {
                     Picker("检查模型", selection: $model.candidate) {
-                        ForEach(DetectionCandidate.allCases) { Text($0.rawValue).tag($0) }
+                        ForEach(model.candidates) { Text($0.name).tag(Optional($0)) }
                     }
                     .labelsHidden().frame(width: 215)
                     .accessibilityLabel("检查模型").accessibilityIdentifier("detection-model")
@@ -241,13 +246,12 @@ struct DetectionView: View {
             if let report = model.report {
                 Text("网站原始结论：\(report.verdict)")
                 Text("已处理 \(report.completed)/\(report.planned) · 有效样本 \(report.valid ?? 0) · 尝试 \(report.attempts ?? 0) 次 · 重试 \(report.retries_used ?? 0) 次")
-                if let fingerprint = report.fingerprint, (report.valid ?? 0) > 0 {
-                    ForEach(fingerprint.matches.keys.filter {
-                        ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "other_known_external"].contains($0)
-                    }.sorted(), id: \.self) { key in
+                if let fingerprint = report.fingerprint, (report.valid ?? 0) > 0, let bootstrap = model.bootstrap {
+                    // Only keys the synced benchmark declares are shown; arbitrary server keys are ignored.
+                    ForEach(bootstrap.fingerprintModelIDs.filter { fingerprint.matches[$0] != nil }, id: \.self) { key in
                         if let score = fingerprint.matches[key], score.isFinite, (0...1).contains(score) {
                             HStack {
-                                Text(key == "other_known_external" ? "其他候选" : key)
+                                Text(bootstrap.displayName(for: key))
                                 Spacer()
                                 Text(String(format: "匹配度 %.3f%%", score * 100))
                             }
