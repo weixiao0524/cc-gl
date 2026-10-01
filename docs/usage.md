@@ -101,6 +101,26 @@ MEOW_LIVE_SMOKE=1 swift test --filter DetectionTests/testOptInLiveSessionWithout
 
 开发验证没有使用真实 Key 完成付费检测，不把模拟报告当作真实鉴真结果。`--demo` 中检测服务完全模拟，面板明确显示“隔离演示”。
 
+## 本地指纹鉴定（ModelTrace）
+
+在模型检测面板顶部切换到 **本地指纹（ModelTrace）**。这一模式移植自 [xqy2006/ModelTrace](https://github.com/xqy2006/ModelTrace)（MIT），全部在本机完成：
+
+1. **出题**：生成 3 道互不相同的题目，要求模型「凭第一反应」写出 292–332 个 1 到 355 的整数，禁止使用工具或规则化模式。措辞与上游一致，因为参考指纹就是用这些措辞采集的。
+2. **请求**：应用直接向编辑区的接口地址发请求，依次尝试 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages（`…/v1` 结尾的地址直接拼接路径，裸域名先补 `/v1`）。第一个被接口接受的格式会用于其余题目；被 400/404/405 等拒绝的探测不计入题目次数。不设置 temperature、不加 system 提示、`max_tokens` 为 4096。
+3. **筛选**：取回答中最长的一串整数（字母会打断串），只保留 1–355；少于 max(80, 55% 题目数量) 个数字、被输出上限截断、回显 Key 的回答不计入。每题失败最多重试 1 次，所以一次鉴定最多 6 次计费请求；401/403 会立即停止。
+4. **归因**：每份回答计算「0.75 × 去除环境方向后的 Hellinger 分布得分 + 0.25 × 四段顺序与末位数字特征得分」，对多份回答取平均，再按校准温度 β 换算为 `softmax` 概率；家族概率为同家族模型概率之和。
+
+**结论规则**：最可能的模型概率 ≥ 80% 且等于申报模型时显示「线索对得上」，等于其他模型时显示「发现了不一样的线索」，其余显示「证据不足」。自填的模型名会忽略大小写和 `provider/` 前缀与候选库匹配；匹配不到时只列出最接近的候选，不判断一致与否。
+
+**限制**：这是闭集推断，只在候选库（当前 17 个 GPT / Claude 模型）内分配概率，库外模型（例如其他厂商）也会被归到最接近的候选；中转站改写提示词、启用工具或缓存都可能影响结果。概率高不等于身份保证。
+
+**指纹库**：随应用内置一份 `modeltrace_bank.json`。打开面板时会静默尝试从 GitHub 拉取上游最新版（`raw.githubusercontent.com`，拒绝重定向，上限 4 MB），通过格式与数值校验且更新时间更新时才写入 `~/Library/Application Support/CodexConfig/modeltrace_bank.json` 并启用；失败时继续使用缓存或内置版本。详细报告中会显示指纹库来源与构建时间。演示模式不联网，用参考直方图生成模拟回答。
+
+```bash
+open -n dist/CodexConfig.app --args --demo --demo-local --demo-outcome 发现差异
+swift test --filter ModelTraceTests   # 含与上游 JS 实现逐项对齐的数值测试
+```
+
 ## iCloud 跨 Mac 同步
 
 侧栏点击 **iCloud 同步**。首次在 iCloud Drive 中创建专用空文件夹，选择「首次创建」，设置至少 12 个字符的同步密码；其他 Mac 选择「连接已有」，选同一文件夹并输入相同密码。请等待第一台 Mac 的文件上传完成后再连接第二台。

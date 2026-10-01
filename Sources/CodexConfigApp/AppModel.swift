@@ -36,6 +36,8 @@ final class AppModel: ObservableObject {
     let service: ConfigurationService
     let store: ProfileStore
     let isDemo: Bool
+    /// Holds the cached ModelTrace bank; demo mode points at a throwaway directory.
+    let supportDirectory: URL
     var cloudSync: CloudSyncModel!
 
     var isDirty: Bool { draft != baseline || apiKey != baselineKey }
@@ -113,6 +115,7 @@ final class AppModel: ObservableObject {
             support = home.appendingPathComponent("Library/Application Support/CodexConfig")
             secrets = KeychainStorage()
         }
+        supportDirectory = support
         service = ConfigurationService(codexDirectory: codex, supportDirectory: support)
         store = ProfileStore(directory: support, secrets: secrets)
         if isDemo {
@@ -189,7 +192,7 @@ final class AppModel: ObservableObject {
 
     func openDetector() {
         detector = DetectionViewModel(baseURL: draft.baseURL, apiKey: apiKey,
-                                      profileName: draft.name, isDemo: isDemo)
+                                      profileName: draft.name, isDemo: isDemo, cacheDirectory: supportDirectory)
     }
 
     func save() {

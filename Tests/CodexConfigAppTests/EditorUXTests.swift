@@ -196,6 +196,79 @@ final class EditorUXTests: XCTestCase {
     }
 
     @MainActor
+    private func waitWhile(_ model: DetectionViewModel, _ phases: [DetectionPhase], seconds: Double = 10) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while phases.contains(model.phase), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    }
+
+    @MainActor
+    func testLocalModeLoadsBankAndSupportsCustomNames() async throws {
+        let model = DetectionViewModel(baseURL: "https://example.com/v1", apiKey: "demo-key", profileName: "Demo", isDemo: true)
+        model.mode = .local
+        try await waitWhile(model, [.connecting])
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(model.bankSource, .builtIn)
+        XCTAssertEqual(model.candidates.count, 18)
+        XCTAssertEqual(model.candidates.last, DetectionViewModel.customCandidate)
+        XCTAssertEqual(model.candidate?.rawValue, "gpt-5.4")
+        XCTAssertNil(model.plan)
+        XCTAssertFalse(model.canStart)
+        model.consent = true
+        XCTAssertTrue(model.canStart)
+
+        model.candidate = DetectionViewModel.customCandidate
+        XCTAssertFalse(model.canStart, "an empty custom name cannot be sent")
+        model.customModel = " openai/Claude-Opus-4-7 "
+        XCTAssertEqual(model.requestModel, "openai/Claude-Opus-4-7")
+        XCTAssertEqual(model.claimedBankModel, "claude-opus-4-7")
+        model.customModel = "my-relay-model"
+        XCTAssertNil(model.claimedBankModel)
+        XCTAssertTrue(model.canStart)
+
+        // Switching back resets the selection to the site's own list.
+        model.mode = .website
+        try await waitWhile(model, [.connecting])
+        XCTAssertEqual(model.candidates.first?.rawValue, "gpt-6-astra")
+        XCTAssertFalse(model.consent)
+    }
+
+    @MainActor
+    func testLocalDemoRunsRealAttributionOffline() async throws {
+        let expectations: [(DemonstrationOutcome, InvestigationScene)] =
+            [(.match, .match), (.mismatch, .mismatch), (.inconclusive, .inconclusive), (.noEvidence, .noEvidence), (.failed, .failed)]
+        for (outcome, scene) in expectations {
+            let model = DetectionViewModel(baseURL: "https://example.com/v1", apiKey: "demo-key", profileName: "Demo", isDemo: true)
+            model.mode = .local
+            try await waitWhile(model, [.connecting])
+            model.candidate = model.candidates.first { $0.rawValue == "claude-opus-4-7" }
+            model.demoOutcome = outcome
+            model.consent = true
+            model.confirmStart()
+            XCTAssertEqual(model.phase, .running)
+            XCTAssertFalse(model.remoteMayBeActive, "local runs never block closing the panel")
+            XCTAssertTrue(model.hasKnownActiveRun)
+            try await waitWhile(model, [.running])
+            XCTAssertEqual(model.scene, scene, "\(outcome)")
+            XCTAssertEqual(model.reportCandidate?.rawValue, "claude-opus-4-7")
+            if outcome == .match { XCTAssertEqual(model.localResult?.top.model, "claude-opus-4-7") }
+        }
+    }
+
+    @MainActor
+    func testLocalStopCancelsWithoutRemoteWait() async throws {
+        let model = DetectionViewModel(baseURL: "https://example.com/v1", apiKey: "demo-key", profileName: "Demo", isDemo: true)
+        model.mode = .local
+        try await waitWhile(model, [.connecting])
+        model.consent = true
+        model.confirmStart()
+        model.stop()
+        try await waitWhile(model, [.running])
+        XCTAssertEqual(model.phase, .finished)
+        XCTAssertTrue(model.localStopped)
+        XCTAssertEqual(model.scene, .stopped)
+    }
+
+    @MainActor
     func testMainWindowRendersModelSettingsControls() throws {
         let model = AppModel(isDemo: true)
         defer { removeDemo(model) }

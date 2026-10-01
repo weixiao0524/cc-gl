@@ -70,4 +70,47 @@ final class InvestigationStoryTests: XCTestCase {
         XCTAssertTrue(InvestigationScene.stopping.explanation.contains("费用仍可能继续"))
         XCTAssertTrue(InvestigationScene.uncertain.explanation.contains("不要立即重复提交"))
     }
+
+    // MARK: - Local ModelTrace mode
+
+    private func localResult(_ id: String, count: Int = 3) throws -> ModelTraceResult {
+        let bank = try ModelTraceBankLoader.builtIn()
+        let model = try XCTUnwrap(bank.model(id))
+        return try ModelTraceFingerprint.analyze((0..<count).map {
+            ModelTraceOutput(text: model.syntheticAnswer(count: 320, seed: UInt64($0 + 1)), expectedCount: 320)
+        }, bank: bank)
+    }
+
+    func testLocalVerdictsNeedClaimAndConfidence() throws {
+        let result = try localResult("claude-opus-4-7")
+        XCTAssertEqual(result.top.model, "claude-opus-4-7")
+        XCTAssertGreaterThanOrEqual(result.top.probability, InvestigationScene.localDecisiveProbability)
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: result, claimed: "claude-opus-4-7"), .match)
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: result, claimed: "gpt-5.5"), .mismatch)
+        // A custom model name outside the bank can never be confirmed or refuted.
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: result, claimed: nil), .inconclusive)
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: nil, claimed: "gpt-5.5"), .noEvidence)
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: result, claimed: "claude-opus-4-7", stopped: true), .stopped)
+    }
+
+    func testLocalLowConfidenceIsInconclusive() throws {
+        // Two answers drawn from different families leave the attribution split.
+        let bank = try ModelTraceBankLoader.builtIn()
+        let mixed = try ModelTraceFingerprint.analyze([
+            ModelTraceOutput(text: try XCTUnwrap(bank.model("gpt-5.5")).syntheticAnswer(count: 200, seed: 11), expectedCount: 0),
+            ModelTraceOutput(text: try XCTUnwrap(bank.model("claude-sonnet-5-5")).syntheticAnswer(count: 330, seed: 5), expectedCount: 330)
+        ], bank: bank)
+        XCTAssertLessThan(mixed.top.probability, InvestigationScene.localDecisiveProbability)
+        XCTAssertEqual(InvestigationScene(phase: .finished, localResult: mixed, claimed: mixed.top.model), .inconclusive)
+    }
+
+    func testLocalProgressAndFailureStates() {
+        XCTAssertEqual(InvestigationScene(phase: .connecting, localResult: nil, claimed: nil), .preparing)
+        XCTAssertEqual(InvestigationScene(phase: .running, localResult: nil, claimed: "x", progress: 0.34), .searching)
+        XCTAssertEqual(InvestigationScene(phase: .running, localResult: nil, claimed: "x", progress: 0.67), .comparing)
+        XCTAssertEqual(InvestigationScene(phase: .failed, localResult: nil, claimed: "x"), .failed)
+        for scene in InvestigationScene.allCases {
+            XCTAssertFalse(scene.explanation(local: true).contains("网站"), "\(scene)")
+        }
+    }
 }
