@@ -54,6 +54,7 @@ if [[ "${1:-}" == "--dmg" ]]; then
     swift scripts/generate-dmg-background.swift .build/dmg-background
     tiffutil -cathidpicheck .build/dmg-background/background.png .build/dmg-background/background@2x.png \
         -out "$staging/.background/background.tiff" >/dev/null 2>&1
+    cp Resources/AppIcon.icns "$staging/.VolumeIcon.icns"
 
     # Lay the window out in a writable image, then compress it. Finder addresses the disk by name, so
     # eject earlier mounts of this installer ("Codex 配置 1", …) that would otherwise share it.
@@ -63,6 +64,7 @@ if [[ "${1:-}" == "--dmg" ]]; then
     hdiutil create -volname "$volume" -srcfolder "$staging" -fs HFS+ -format UDRW -ov "$rw_image" >/dev/null
     mount_point="$(hdiutil attach "$rw_image" -readwrite -noverify -noautoopen | awk -F '\t' '/Apple_HFS/ {print $NF}')"
     [[ "$mount_point" == "/Volumes/$volume" ]] || { echo "Unexpected mount point: $mount_point" >&2; exit 1; }
+    SetFile -a C "$mount_point"
     # Finder writes the window layout to .DS_Store. Needs Automation permission for Finder; without it
     # the DMG still works, just with Finder's default window.
     if ! osascript <<APPLESCRIPT
@@ -78,14 +80,19 @@ tell application "Finder"
         set icon size of viewOptions to 112
         set text size of viewOptions to 13
         set background picture of viewOptions to file ".background:background.tiff"
-        set position of item "CodexConfig.app" of container window to {170, 200}
-        set position of item "Applications" of container window to {490, 200}
         close
         open
-        -- Hiding the toolbar makes Finder shift icons by its height; place them again once it is gone.
-        set position of item "CodexConfig.app" of container window to {170, 200}
-        set position of item "Applications" of container window to {490, 200}
-        update without registering applications
+        -- Place icons only after the toolbar is gone (hiding it shifts icons by its height). Support
+        -- files go below the visible area so they stay out of sight when Finder shows hidden files.
+        set position of item "CodexConfig.app" of container window to {170, 190}
+        set position of item "Applications" of container window to {490, 190}
+        try
+            set position of item ".background" of container window to {170, 620}
+        end try
+        try
+            set position of item ".VolumeIcon.icns" of container window to {490, 620}
+        end try
+        -- No "update": it deletes .VolumeIcon.icns. Closing the window writes the layout.
         delay 2
         close
     end tell
@@ -94,9 +101,7 @@ APPLESCRIPT
     then
         echo "WARNING: Finder layout skipped (allow Automation for Finder to get the styled window)." >&2
     fi
-    # Added after Finder: its "update" removes a .VolumeIcon.icns that is already on the volume.
-    cp Resources/AppIcon.icns "$mount_point/.VolumeIcon.icns"
-    SetFile -a C "$mount_point"
+    rm -rf "$mount_point/.fseventsd"
     sync
     hdiutil detach "$mount_point" -quiet
     mount_point=""

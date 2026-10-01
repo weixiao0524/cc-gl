@@ -1,12 +1,13 @@
 import AppKit
 
 // Draws the DMG window background at 1x and 2x. Layout constants must match the Finder script in
-// build-app.sh: a 660×400 window with the app icon centred at (170, 200) and Applications at (490, 200).
+// build-app.sh: a 660×400 window with the app icon centred at (170, 190) and Applications at (490, 190).
+// Keep the bottom ~40 pt quiet: Finder's optional path/status bar can cover it.
 let directory = URL(fileURLWithPath: CommandLine.arguments[1])
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
 let width: CGFloat = 660, height: CGFloat = 400
-let iconY: CGFloat = 200, leftX: CGFloat = 170, rightX: CGFloat = 490
+let iconY: CGFloat = 190, leftX: CGFloat = 170, rightX: CGFloat = 490
 let teal = NSColor(calibratedRed: 0.10, green: 0.43, blue: 0.38, alpha: 1)
 
 func centered(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor, top: CGFloat) {
@@ -35,8 +36,8 @@ func draw(scale: CGFloat, to url: URL) throws {
 
     // Soft discs behind the two icon slots.
     for x in [leftX, rightX] {
-        NSColor(calibratedWhite: 1, alpha: 0.65).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x - 78, y: height - iconY - 78, width: 156, height: 156)).fill()
+        NSColor(calibratedWhite: 1, alpha: 0.55).setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - 82, y: height - iconY - 82, width: 164, height: 164)).fill()
     }
 
     // Dashed arrow from the app to Applications.
@@ -58,11 +59,10 @@ func draw(scale: CGFloat, to url: URL) throws {
     head.lineJoinStyle = .round
     head.stroke()
 
-    centered("Codex 配置", size: 26, weight: .bold, color: teal, top: 34)
-    centered("将左侧应用拖到「应用程序」文件夹即可完成安装", size: 13, weight: .regular,
-             color: NSColor(calibratedWhite: 0.30, alpha: 1), top: 74)
-    centered("首次打开若被系统拦截：在「应用程序」中右键点按 CodexConfig，选择「打开」", size: 11, weight: .regular,
-             color: NSColor(calibratedWhite: 0.42, alpha: 1), top: 352)
+    // The window title already names the app; one instruction line keeps the window calm.
+    centered("拖到「应用程序」即可完成安装", size: 15, weight: .medium, color: teal, top: 42)
+    centered("首次打开若被拦截：在「应用程序」中右键点按 CodexConfig →「打开」", size: 11, weight: .regular,
+             color: NSColor(calibratedWhite: 0.45, alpha: 1), top: 318)
 
     NSGraphicsContext.restoreGraphicsState()
     try bitmap.representation(using: .png, properties: [:])!.write(to: url)
