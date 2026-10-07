@@ -583,7 +583,9 @@ struct ModelSettingsPanel: View {
             Text("此项替换内置模型指令，不是 AGENTS.md。官方不建议轻易覆盖。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(path ?? "默认文件：\(model.service.codexDirectory.appendingPathComponent("model_instructions.md").path)")
+            Text(path
+                 ?? model.lastInstructionsPath.map { "上次文件：\($0)" }
+                 ?? "默认文件：\(model.service.codexDirectory.appendingPathComponent("model_instructions.md").path)")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)

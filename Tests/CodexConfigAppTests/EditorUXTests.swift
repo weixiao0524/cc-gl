@@ -128,6 +128,28 @@ final class EditorUXTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: instructions))
     }
 
+    @MainActor
+    func testInstructionsToggleRestoresLastChosenFile() throws {
+        let model = AppModel(isDemo: true)
+        defer { removeDemo(model) }
+        let custom = model.service.codexDirectory.appendingPathComponent("custom_instructions.md")
+        try Data("custom".utf8).write(to: custom)
+        model.setInstructionsFile(custom.path)
+        XCTAssertNil(model.errorMessage)
+        model.setInstructionsFile(nil)
+        XCTAssertNil(try model.current?.config.modelSettings().instructionsFile)
+        XCTAssertEqual(model.lastInstructionsPath, custom.path)
+        model.startInstructionsFile(open: false)
+        XCTAssertEqual(try model.current?.config.modelSettings().instructionsFile, custom.path)
+
+        model.setInstructionsFile(nil)
+        try FileManager.default.removeItem(at: custom)
+        model.startInstructionsFile(open: false)
+        let fallback = model.service.codexDirectory.appendingPathComponent("model_instructions.md").path
+        XCTAssertEqual(try model.current?.config.modelSettings().instructionsFile, fallback)
+        XCTAssertEqual(model.lastInstructionsPath, fallback)
+    }
+
     func testSyncFormValidationAndPasswordRetention() {
         var form = SyncConnectionForm()
         XCTAssertFalse(form.isValid)
