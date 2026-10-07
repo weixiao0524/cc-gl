@@ -30,12 +30,16 @@ final class AppModel: ObservableObject {
     @Published var needsRecovery = false
     @Published var storeReadable = true
     @Published var detector: DetectionViewModel?
+    /// Last instructions file the user enabled, so toggling off and on restores it instead of the default.
+    @Published private(set) var lastInstructionsPath: String?
     private var baseline = Profile(name: "当前配置", baseURL: "")
     private var baselineKey = ""
     private var pendingAction: (() -> Void)?
     let service: ConfigurationService
     let store: ProfileStore
     let isDemo: Bool
+    /// Holds the cached ModelTrace bank; demo mode points at a throwaway directory.
+    let supportDirectory: URL
     var cloudSync: CloudSyncModel!
 
     var isDirty: Bool { draft != baseline || apiKey != baselineKey }
@@ -113,6 +117,10 @@ final class AppModel: ObservableObject {
             support = home.appendingPathComponent("Library/Application Support/CodexConfig")
             secrets = KeychainStorage()
         }
+        supportDirectory = support
+        lastInstructionsPath = (try? String(contentsOf: support.appendingPathComponent(Self.instructionsPathFile), encoding: .utf8))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
         service = ConfigurationService(codexDirectory: codex, supportDirectory: support)
         store = ProfileStore(directory: support, secrets: secrets)
         if isDemo {
@@ -189,7 +197,7 @@ final class AppModel: ObservableObject {
 
     func openDetector() {
         detector = DetectionViewModel(baseURL: draft.baseURL, apiKey: apiKey,
-                                      profileName: draft.name, isDemo: isDemo)
+                                      profileName: draft.name, isDemo: isDemo, cacheDirectory: supportDirectory)
     }
 
     func save() {
@@ -281,10 +289,14 @@ final class AppModel: ObservableObject {
                 try ConfigDocument.validateInstructionsPath(resolved)
                 change = .setString("model_instructions_file", resolved)
             } else {
+                if let existing = try current.config.modelSettings().instructionsFile {
+                    rememberInstructionsPath(existing)
+                }
                 change = .remove("model_instructions_file")
             }
             try service.setRoots([change], expected: current.snapshot)
             self.current = try service.load()
+            if let resolved = change.stringValue { rememberInstructionsPath(resolved) }
             status = path == nil
                 ? "已关闭自定义模型指令。请重启 Codex 或相关会话"
                 : "已启用自定义模型指令。请重启 Codex 或相关会话"
@@ -297,9 +309,11 @@ final class AppModel: ObservableObject {
         guard let current else { return }
         do {
             let existing = try current.config.modelSettings().instructionsFile
-            let url = existing.map { URL(fileURLWithPath: $0) }
+            let remembered = lastInstructionsPath.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+            let chosen = existing ?? remembered
+            let url = chosen.map { URL(fileURLWithPath: $0) }
                 ?? service.codexDirectory.appendingPathComponent("model_instructions.md")
-            if existing == nil, !FileManager.default.fileExists(atPath: url.path) {
+            if chosen == nil, !FileManager.default.fileExists(atPath: url.path) {
                 guard let data = ConfigDocument.defaultInstructionsText().data(using: .utf8) else {
                     throw ConfigError("无法创建模型指令文件。")
                 }
@@ -309,6 +323,7 @@ final class AppModel: ObservableObject {
             try ConfigDocument.validateInstructionsPath(url.path)
             try service.setRoots([.setString("model_instructions_file", url.path)], expected: current.snapshot)
             self.current = try service.load()
+            rememberInstructionsPath(url.path)
             if open { NSWorkspace.shared.open(url) }
             status = open
                 ? "已启用模型指令并打开文件。请编辑保存后重启 Codex 或相关会话"
@@ -316,6 +331,16 @@ final class AppModel: ObservableObject {
             statusIsError = false
         } catch { report(error) }
         updateBackup()
+    }
+
+    private static let instructionsPathFile = "model-instructions-path"
+
+    private func rememberInstructionsPath(_ path: String) {
+        lastInstructionsPath = path
+        let file = supportDirectory.appendingPathComponent(Self.instructionsPathFile)
+        try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard (try? Data(path.utf8).write(to: file, options: .atomic)) != nil else { return }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     func setContextLimits(window: Int64?, compact: Int64?) {

@@ -36,6 +36,25 @@ public enum InvestigationScene: String, CaseIterable, Sendable {
         }
     }
 
+    /// Top-model probability needed before the local ModelTrace mode calls a match or mismatch.
+    public static let localDecisiveProbability = 0.8
+
+    /// Local ModelTrace mode: driven by the collected answers, never by animation time.
+    /// `result == nil` once finished means no answer was usable; `claimed == nil` (a custom model name
+    /// outside the reference bank) can only ever be inconclusive.
+    public init(phase: DetectionPhase, localResult result: ModelTraceResult?, claimed: String?,
+                progress: Double = 0, stopped: Bool = false) {
+        switch phase {
+        case .running: self = progress >= 0.6 ? .comparing : .searching
+        case .finished:
+            if stopped { self = .stopped; return }
+            guard let result else { self = .noEvidence; return }
+            guard let claimed, result.top.probability >= Self.localDecisiveProbability else { self = .inconclusive; return }
+            self = result.top.model == claimed ? .match : .mismatch
+        default: self = InvestigationScene(phase: phase, report: nil)
+        }
+    }
+
     public static func progress(_ report: DetectionReport?) -> Double {
         guard let report, report.planned > 0 else { return 0 }
         return min(1, max(0, Double(report.completed) / Double(report.planned)))
@@ -76,6 +95,26 @@ public enum InvestigationScene: String, CaseIterable, Sendable {
         case .stopped: return "网站已确认任务停止。没有完成的检查，不能当作真假判断。"
         case .failed: return "可能是网络、接口或检测服务出了问题。这次失败不能说明模型是真是假。"
         case .uncertain: return "网站可能已经开始检查并产生费用。先去网站查看记录，不要立即重复提交。"
+        }
+    }
+
+    /// Copy for the local ModelTrace mode, where no website is involved.
+    public func explanation(local: Bool) -> String {
+        guard local else { return explanation }
+        switch self {
+        case .preparing: return "正在载入 ModelTrace 指纹库。还没有发出任何请求。"
+        case .briefing: return "选好申报模型，再点“开始查案”。小侦探会让它写一长串数字，再比对数字习惯。"
+        case .dispatching, .searching: return "正在直接向这个接口提问，Key 不经过任何第三方。每份数字回答都是一条线索。"
+        case .comparing: return "正在把数字分布和 17 个参考模型逐一比较。动画不会提前判定结果。"
+        case .match: return "数字习惯与申报模型最一致。这只是候选库内的指纹推断，不是百分百的身份保证。"
+        case .mismatch: return "数字习惯更接近另一个候选模型。先核对渠道和模型名，不要仅凭一次结果认定是假模型。"
+        case .inconclusive: return "证据不足以确认，或申报模型不在候选库里。下方仍列出最接近的候选供参考。"
+        case .stopped: return "已停止。已经发出的请求仍可能计费；没完成的检查不能当作真假判断。"
+        case .failed: return "可能是网络、接口、Key 或模型名出了问题。这次失败不能说明模型是真是假。"
+        case .connectionLost: return "和接口的连接中断了。可以重新开始一次检查。"
+        case .stopping: return "正在取消本地请求；已经发出的请求仍可能计费。"
+        case .uncertain: return "请求状态不确定；已经发出的请求可能已经计费。"
+        case .noEvidence: return explanation
         }
     }
 

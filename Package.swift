@@ -8,7 +8,8 @@ let package = Package(
     targets: [
         .target(name: "CTOMLPatch", exclude: ["LICENSE"], publicHeadersPath: "include",
                 cxxSettings: [.define("TOML_LARGE_FILES", to: "1")]),
-        .target(name: "CodexConfigCore", dependencies: ["CTOMLPatch"]),
+        .target(name: "CodexConfigCore", dependencies: ["CTOMLPatch"],
+                resources: [.copy("Resources/modeltrace_bank.json"), .copy("Resources/ModelTrace-LICENSE.txt")]),
         .executableTarget(name: "CodexConfigApp", dependencies: ["CodexConfigCore"]),
         .testTarget(name: "CodexConfigCoreTests", dependencies: ["CodexConfigCore"]),
         .testTarget(name: "CodexConfigAppTests", dependencies: ["CodexConfigApp"])
